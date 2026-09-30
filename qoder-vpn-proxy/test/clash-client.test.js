@@ -83,12 +83,13 @@ test('delay 把 url 与 timeout 放进 query', async () => {
   c.close(); await fake.close();
 });
 
-test('reload 记数、closeConnections 走 DELETE', async () => {
+test('reload 在真机上不存在（POST /configs/reload -> 404），closeConnections 走 DELETE', async () => {
   const { fake, client: c } = await client();
-  await c.reload({ proxyProviders: true });
-  assert.equal(fake.state.reloadCount, 1);
+  await assert.rejects(() => c.reload({ proxyProviders: true }), /404/);
+  assert.equal(fake.state.reloadCount, 1, '请求确实发出去了，是核心没这个端点');
   await c.closeConnections();
   assert.ok(fake.hits.includes('DELETE /connections'));
+  assert.ok(!fake.hits.includes('GET /traffic'), '不订阅流式端点，否则会挂住请求');
   assert.deepEqual(await c.connections(), { total: 0, uplink: 0, downlink: 0, connections: [] });
   c.close(); await fake.close();
 });

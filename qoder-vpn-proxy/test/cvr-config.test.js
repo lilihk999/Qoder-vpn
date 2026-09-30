@@ -250,6 +250,25 @@ test('modifiedSinceBackup：改过报脏，还原后即便备份仍在也不报�
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('stop 只还原 verge.yaml：profiles.yaml 里用户主动切的订阅不能被撤销', async () => {
+  // 真机踩过：activate 到新区块后 stop({restore:true}) 把 profiles.yaml 回滚到切换前，
+  // 用户以为订阅换成功了，重启完核心又变回去。会话级要还原的只有系统代理压制。
+  const dir = mkSandbox('stop-profiles');
+  const cfg = path.join(dir, 'config');
+  const cvr = new C.CvrConfig({
+    configDir: cfg, backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs,
+    execFile: () => Promise.resolve({ stdout: '' }),
+  });
+  await cvr.backup(['verge.yaml', 'profiles.yaml']);
+  await cvr.suppressSystemProxy();
+  fs.writeFileSync(path.join(cfg, 'profiles.yaml'), '# Profiles\n\ncurrent: B\nitems:\n- uid: B\n  type: remote\n');
+  const r = await cvr.stop({ restore: true });
+  assert.deepEqual(r.restoredList.map((x) => x.name), ['verge.yaml'], 'stop 只碰 verge.yaml');
+  assert.match(fs.readFileSync(path.join(cfg, 'verge.yaml'), 'utf8'), /^enable_system_proxy: true$/m, '压制已还原');
+  assert.match(fs.readFileSync(path.join(cfg, 'profiles.yaml'), 'utf8'), /^current: B$/m, '用户切的订阅保持住');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('stop：taskkill 两个镜像，restore=true 时还原备份', async () => {
   const dir = mkSandbox('stop');
   const cmds = [];

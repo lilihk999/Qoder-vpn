@@ -183,6 +183,33 @@ test('activate 写 current、reload 并回读组确认', async () => {
   assert.equal(r.current, e.uid);
   assert.equal(r.groups[0].now, 'HK 1');
   assert.equal(reloads.length, 1);
+  assert.equal(r.reloaded, true);
+  assert.equal(r.needsRestart, false);
+  assert.ok(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8').includes(`current: ${e.uid}`));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('核心没有 reload 端点时 activate 仍算成功，但必须明说要重启', async () => {
+  // 真机 v1.19.25：POST /configs/reload -> 404。注册表已经写对，
+  // 把它当失败会让调用方以为切换没发生，从而重复点击或回滚。
+  const dir = path.join(os.tmpdir(), `qvp-sub-noreload-${process.pid}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const configDir = path.join(dir, 'cvr');
+  fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'profiles.yaml'), PROFILES);
+  const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: path.join(dir, 'data') }));
+  const client = {
+    reload: async () => { throw Object.assign(new Error('POST /configs/reload -> HTTP 404 404 page not found'), { kind: 'channel_unavailable' }); },
+    getProxies: async () => ({ groups: [{ name: '节点选择', now: 'HK 1', all: ['HK 1'], type: 'Selector' }], nodes: ['HK 1'] }),
+    close() {},
+  };
+  const repo = new SubscriptionRepo({ configDir, dirs, fetchImpl, now: () => 1790000000, client });
+  const e = await repo.add({ url: 'https://b.test/sub?token=XYZ' });
+  const r = await repo.activate(e.uid);
+  assert.equal(r.current, e.uid, '注册表里的 current 确实换了');
+  assert.equal(r.reloaded, false);
+  assert.equal(r.needsRestart, true);
+  assert.match(r.note, /proxy_core_stop|重启/);
   assert.ok(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8').includes(`current: ${e.uid}`));
   fs.rmSync(dir, { recursive: true, force: true });
 });

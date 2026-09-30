@@ -58,7 +58,9 @@ function makeHandlers(state) {
         return { status: 204 };
       }
     }
-    if (p === '/configs/reload' && method === 'POST') { state.reloadCount += 1; return { status: 204 }; }
+    // 真机 v1.19.25 实测没有 POST /configs/reload（404 page not found），
+    // 改配置只能靠重启核心；替身必须一样 404，否则 activate 会假装重载成功。
+    if (p === '/configs/reload' && method === 'POST') { state.reloadCount += 1; return { status: 404, json: { message: '404 page not found' } }; }
     if (p === '/connections' && method === 'DELETE') { state.connections = []; return { status: 204 }; }
     if (p === '/connections' && method === 'GET') {
       return { status: 200, json: { total: 0, uplink: 0, downlink: 0, connections: state.connections } };

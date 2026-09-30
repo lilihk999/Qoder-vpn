@@ -269,11 +269,25 @@ class SubscriptionRepo {
     this.mustFind(uid);
     const next = P.setCurrent(this.registryText(), uid);
     this.writeRegistry(next);
-    if (this.client) await this.client.reload({ proxyProviders: false });
+    // v1.19.25 起 mihomo 没有 POST /configs/reload（404）。注册表已经写对，
+    // 把重载失败当激活失败会误导调用方；改成如实报告"要重启核心才生效"。
+    let reloaded = false;
+    if (this.client) {
+      try { await this.client.reload({ proxyProviders: false }); reloaded = true; }
+      catch { reloaded = false; }
+    }
     const groups = this.client ? (await this.client.getProxies()).groups : [];
     const after = this.current();
     if (after !== uid) throw new ApiError('profile_registry_desync', `切换 current 后回读为 ${after}`, 'CVR 可能正在回写该文件');
-    return { current: after, groups };
+    return {
+      current: after,
+      groups,
+      reloaded,
+      needsRestart: this.client ? !reloaded : false,
+      note: reloaded || !this.client
+        ? ''
+        : 'mihomo 未重载配置（该版本没有 /configs/reload）：profiles.yaml 已改，需 proxy_core_stop + proxy_core_start 或 GUI 里点一下该订阅才生效',
+    };
   }
 
   async remove(uid, { force = false } = {}) {
