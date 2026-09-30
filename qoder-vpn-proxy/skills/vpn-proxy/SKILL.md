@@ -16,13 +16,15 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 | 节点慢 | `proxy_test` 排序，再 `proxy_select` 换最快节点 |
 | 机场换链接 / 轮换 token | `proxy_subscription_edit` |
 | 加第二个机场 | `proxy_subscription_add` + 需要时 `activate` |
+| 实验做完、`backups/` 里堆了带 token 的旧备份 | `proxy_restore_config prune=true`（先 `dryRun=true` 看一眼要删什么） |
 
 ## 边界（不要越界）
 
 - **不改系统代理、不开 TUN、不写注册表**。浏览器和游戏不受影响，这是设计前提，不是副作用。
-- **不要让 Qoder 自己的请求走代理**。`proxy_diagnose` 若显示 `Qoder 直连更快`，保持 `HTTPS_PROXY` 不设置。
+- **Qoder 自身的模型与 MCP 请求不走代理**——这是用户的决定，不是性能建议。`proxy_diagnose` 的实测也支持它（`qoder.com` 直连 0.5s、经代理 3.7s）。不要把 `HTTPS_PROXY` 指向本机端口。
 - 会话结束前若用了 `proxy_toolconfig apply`，提醒用户可 `action=revert` 还原；不要静默留着。
 - 订阅 URL 含 token。所有输出里 token 已被脱敏，**不要**在回复里复述原始链接。
+- `backups/` 里的 `profiles.yaml.*.bak` **是未脱敏的原始字节，含订阅 token**，且清理不会自动发生——每次动过配置的流程结束时跑一次 `prune`。
 
 ## 失败怎么读
 

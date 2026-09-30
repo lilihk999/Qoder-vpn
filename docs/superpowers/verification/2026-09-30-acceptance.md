@@ -205,6 +205,8 @@ mcp.log
 
 **遗留问题（不能粉饰的那一条）**：插件自己的 `backups/profiles.yaml.*.bak` **含原始 token** —— 这是物理必然：备份是 CVR `profiles.yaml` 的逐字节副本，而那份文件本来就存订阅 URL。目前**没有**备份保留/过期策略，也没有对备份内容做脱敏（脱敏会让备份失去还原价值）。可选处置（都要用户点头）：加 `backups/` 保留期清理，或把备份目录权限收紧。
 
+**后记（用户点头后的处置）**：用户选了"① backups/ 加保留期清理"，实现见计划 Task 18 —— `proxy_restore_config prune=true`（默认每个文件名留 5 份、超 14 天的旧副本删除、最新一份永远留，`dryRun` 先出清单）。仍在的局限有两条，不遮掩：清理**不自动触发**（备份写入层用注入的假 `fs`，prune 用真 `unlinkSync`，硬拼会让那些假件失效），所以靠 SKILL.md 要求流程收尾跑一次；且**保留期内**的备份依旧是未脱敏原文，`keepPerName`/`olderThanDays` 只是把暴露窗口从"永久"压到"5 份 / 14 天"。另一条备选（收紧目录权限）没做。
+
 ---
 
 ## 验收 8：`proxy_restore_config` 后 CVR 配置文件逐字节还原
@@ -272,7 +274,7 @@ assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CV
 
 | # | 未验证项 | 实测结论 |
 |---|---|---|
-| 1 | Qoder 桌面端自身的模型请求是否读 WinINET 系统代理 | **未做端到端证明，但已有决定性旁证且不需要它**：`proxy_diagnose` 的 `Qoder` 行显示直连 540ms / 经代理 3622ms，直连更快，所以设计上就是"不让 Qoder 走代理"。加上全程 `ProxyEnable=0`，WinINET 分支根本不会被读。用户那句"Qoder 自己的模型请求要不要走代理"仍是**未回答的产品问题**，需要单独验证（做法：开着 CVR、把系统代理临时打开，看模型请求是否变慢 —— 这会动系统代理，必须先取得同意）。 |
+| 1 | Qoder 桌面端自身的模型请求是否读 WinINET 系统代理 | **未做端到端证明，但已有决定性旁证且不需要它**：`proxy_diagnose` 的 `Qoder` 行显示直连 540ms / 经代理 3622ms，直连更快，所以设计上就是"不让 Qoder 走代理"。加上全程 `ProxyEnable=0`，WinINET 分支根本不会被读。**收尾时用户已给出决定（③）：Qoder 自身模型请求不走代理** —— 这条从"未回答的产品问题"变成设计约束，写进 SKILL.md 的边界一节。端到端验证要临时打开系统代理（违反设计前提），因此按决定不再做。 |
 | 2 | 命名管道的 mihomo HTTP 支持程度 | **完全够用，默认通道就是管道**。`enable_external_controller:false` 时 `\\.\pipe\verge-mihomo` 照样能跑 `GET /version`、`GET /configs`、`GET /proxies`、`PATCH /configs`、`GET /delay`、`PUT /proxies/{name}`，全程无需 TCP、无需改 CVR 设置、无需用户额外授权。详见 `probes/01-named-pipe.md`（含 404 端点矩阵与两个流式端点）。 |
 | 3 | `PreToolUse` 是否支持 `updatedInput` | **不支持**。hook stdout 契约只有 `decision`/`reason`/`hookSpecificOutput.additionalContext`，字段表里没有 `updatedInput`；二进制里那 23 处 `updatedInput` 属于 SDK 的 permission-response 通路。因此本插件接受"提示 + 工具级持久配置"的组合，不做入参改写。详见 `probes/02-hooks.md` §1。 |
 | 4 | 新订阅链接返回的节点集合与旧 profile 是否一致 | **一致**：新条目刷新后 `nodes=15`，与旧条目在 GUI/`/proxies` 里看到的 15 个业务节点同一集合（4 个策略组：GLOBAL 20 / 示例机场 17 / 故障转移 15 / 自动选择 15，组数与成员未变）。quota 也读回来了（total 74826208722）。所以"换链接"是纯地址变更，不是套餐变更。 |
@@ -323,6 +325,7 @@ cmp server/*.js test/*.js README.md skills/vpn-proxy/SKILL.md .qoder-plugin/plug
 
 1. 验收 4 / 9 的 Qoder 集成层（工具可见性、hook 是否真注入、`@local` source 能否加载）—— 等用户重启。
 2. `proxy_test` 默认 5000ms timeout 在冷核心上误报 —— 已记录，未改。
-3. `backups/profiles.yaml.*` 含原始 token，无保留期策略 —— 需用户定处置。
-4. CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值 —— 需用户同意才清（插件按前提不写注册表）。
-5. "Qoder 模型请求要不要走代理"这个产品问题仍未回答。
+3. ~~`backups/profiles.yaml.*` 含原始 token，无保留期策略~~ —— **已由用户决定并实现（①，计划 Task 18）**：`proxy_restore_config prune=true`。残留局限见上面"后记"。
+4. CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值 —— 用户收尾时提了这条（②），但**措辞是"值否清掉"，读不出是"是否要清"还是在指示"清掉"**；插件按前提从不写注册表，删除它属于对用户机器的不可逆改动，必须先确认语义再动手。当前状态：`ProxyEnable=0x0`，两值惰性。
+5. ~~"Qoder 模型请求要不要走代理"仍未回答~~ —— **用户已定（③）：不走**。已写进 SKILL.md 边界与 spec §8。
+6. **推送前的新增阻塞（本次核查发现，比上面几条都严重）**：`git grep` 对 `master` 分支的**已提交内容**显示 `docs/superpowers/plans/…md:248` 含**完整 32 位订阅 token**（`redactUrl('https://<订阅站>/<路径>?token=<完整 token>')` 这一行测试样例），spec §2 亦含完整的旧/新订阅路径段。feature 分支 `qoder-vpn-proxy` 的 tip 已把这些改成前缀/占位（本次核查确认只剩 8 字符前缀），但 **master 的历史 blob 里原值仍在**。本仓库至今**没有配置任何 remote**（`git remote -v` 为空），所以尚未有任何内容外泄；一旦"推送并创建 Pull Request"，PR 的 base 必须是 master，那 3 个 master 提交会一起公开。可选处置：① 先在机场面板轮换 token（最彻底）；② 首次推送前重写 master 那 3 个提交里的对应行（无 remote，重写成本极低，但属破坏性 git 操作，需用户点头）；③ 只推 feature 分支、不推 master（则 PR 无法创建）。未选定前**不执行任何 push**。

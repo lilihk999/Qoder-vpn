@@ -40,7 +40,7 @@
 | `proxy_subscription_activate` | 切换激活订阅：写 `profiles.yaml` 的 `current` 并回读确认。mihomo v1.19.25 **没有** reload 端点，所以返回里 `needsRestart: true` 表示还要 `proxy_core_stop` + `proxy_core_start`（或在 GUI 点一下该订阅）才真正加载新节点 |
 | `proxy_subscription_remove` | 删除订阅：移除注册项，内容文件移入插件回收目录 `.trash`（可撤销，不硬删） |
 | `proxy_diagnose` | 对 GitHub / npm / PyPI / Qoder 等地址，同一时刻各跑一轮"直连"与"经代理"的 curl（直连轮强制 `--noproxy '*'`，不被环境变量污染），给出该不该走代理的结论 |
-| `proxy_restore_config` | 列出插件做过的全部带时间戳备份并还原 |
+| `proxy_restore_config` | 列出插件做过的全部带时间戳备份并还原；`prune=true` 改为按保留期清理备份目录 |
 
 ## `scope=session` 与 `scope=global`
 
@@ -62,7 +62,7 @@
 | 路径 | 内容 |
 |---|---|
 | `subscriptions.json` | 插件侧的订阅备注（显示名、备注、自动更新策略）；真正的订阅注册表仍是 CVR 的 `profiles.yaml` |
-| `backups/` | 每次写 `verge.yaml` / `profiles.yaml` / `~/.npmrc` 前的时间戳备份，`proxy_restore_config` 列的就是这里 |
+| `backups/` | 每次写 `verge.yaml` / `profiles.yaml` / `~/.npmrc` 前的时间戳备份，`proxy_restore_config` 列的就是这里。**`profiles.yaml.*.bak` 是原始字节，里面带着未脱敏的订阅 token**；保留期靠 `proxy_restore_config prune=true`（默认每个名字留 5 份、超过 14 天的旧副本删掉，最新一份永远留），清理不会自动发生 |
 | `.trash/` | 删除订阅时移入的内容文件，可手动挪回 |
 | `logs/mcp.log` | MCP 服务端日志。**只写文件与 stderr，绝不写 stdout** —— stdout 是协议通道 |
 

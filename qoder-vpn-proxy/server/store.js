@@ -74,6 +74,52 @@ function latestBackupIn(dirPath, name) {
   return hits.length ? path.join(dirPath, hits[hits.length - 1]) : null;
 }
 
+/**
+ * 备份保留期清理。按"逻辑文件名"（verge.yaml / profiles.yaml / .npmrc）分组，各自淘汰老备份：
+ * 名次超出 keepPerName 的删（reason:count），超过 olderThanDays 的删（reason:age）。
+ * 每组至少留最新一份 —— 全删干净等于让 proxy_restore_config 失去还原依据，
+ * 而 profiles.yaml 的备份里带着订阅 token，留着才是问题：所以两条规则同时生效。
+ */
+function pruneBackupsIn(dirPath, { keepPerName = 5, olderThanDays = 14, now = Date.now(), dryRun = false } = {}) {
+  const all = listBackupsIn(dirPath); // 升序：老的在前
+  const groups = new Map();
+  for (const f of all) {
+    const name = (/^(.+)\.[\d-]+\.bak$/.exec(f) || [, f])[1];
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(f);
+  }
+  const DAY = 86400000;
+  const deleted = [];
+  const failed = [];
+  const kept = [];
+  for (const files of groups.values()) {
+    const last = files.length - 1;
+    files.forEach((f, i) => {
+      const rank = last - i; // 0 = 该组最新
+      let reason = null;
+      if (rank > 0) {
+        if (rank >= keepPerName) reason = 'count';
+        else {
+          let age = 0;
+          try { age = now - fs.statSync(path.join(dirPath, f)).mtimeMs; } catch { age = 0; }
+          if (age > olderThanDays * DAY) reason = 'age';
+        }
+      }
+      if (reason) {
+        const entry = { file: f, reason };
+        if (dryRun) {
+          deleted.push(entry);
+        } else {
+          try { fs.unlinkSync(path.join(dirPath, f)); deleted.push(entry); }
+          // Windows 上 CVR 可能正占着文件；删不掉就如实报 failed，不能假装已清理
+          catch (e) { failed.push({ file: f, reason, error: e.code || e.message }); }
+        }
+      } else kept.push(f);
+    });
+  }
+  return { deleted, failed, kept, scanned: all.length, dryRun: !!dryRun };
+}
+
 function restoreFromTrash(d, name, dest) {
   const src = path.join(d.trash, name);
   if (!fs.existsSync(src)) throw new ApiError('config_write_failed', `回收目录里没有 ${name}`, '用 proxy_restore_config 查看当前可还原项');
@@ -83,5 +129,5 @@ function restoreFromTrash(d, name, dest) {
 
 module.exports = {
   dataDir, dirs, ensure, readJson, writeJsonAtomic, stamp,
-  moveToTrash, listTrash, listBackupsIn, latestBackupIn, restoreFromTrash,
+  moveToTrash, listTrash, listBackupsIn, latestBackupIn, pruneBackupsIn, restoreFromTrash,
 };
