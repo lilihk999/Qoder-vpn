@@ -84,6 +84,29 @@ test('backup 后 suppress 再 restore：逐字节一致', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('listBackups 混用两种时间戳格式时按 mtime 排，restore 取到真正的最新', async () => {
+  // 真机 backups 目录里同时存在 cvr-config 的 20260930-123930-488-001 与
+  // subscriptions 走 store.stamp 的 20260930125704201-001；'-'(0x2D) 比数字小，
+  // 纯按文件名排序会把带横杠的（可能更晚的）备份判成最旧。
+  const dir = mkSandbox('mixedstamp');
+  const bd = path.join(dir, 'backups');
+  const f = path.join(dir, 'config', 'verge.yaml');
+  const old = fs.readFileSync(f, 'utf8');
+  const dashed = path.join(bd, 'verge.yaml.20260930-235959-999-001.bak'); // 名字最"旧"，实际最新
+  const plain = path.join(bd, 'verge.yaml.20260930120000000-001.bak');
+  fs.writeFileSync(dashed, 'NEWEST');
+  fs.writeFileSync(plain, 'STALE');
+  const t = (d) => new Date(Date.UTC(2026, 8, 30, d % 24, 0, 0));
+  fs.utimesSync(plain, t(1), t(1));
+  fs.utimesSync(dashed, t(23), t(23));
+  const cvr = new C.CvrConfig({ configDir: path.join(dir, 'config'), backupDir: bd, exePath: exe(dir), fsImpl: fs });
+  assert.equal(cvr.listBackups()[0].backupPath, dashed, '最新备份必须排第一');
+  await cvr.restore(['verge.yaml']);
+  assert.equal(fs.readFileSync(f, 'utf8'), 'NEWEST', '还原必须用真正最新的那份');
+  fs.writeFileSync(f, old);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('备份失败则不写入（spec §4：不进半改状态）', async () => {
   const dir = mkSandbox('backupfail');
   const boomFs = { ...fs, copyFileSync: () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); } };

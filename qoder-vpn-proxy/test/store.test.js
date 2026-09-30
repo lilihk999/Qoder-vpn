@@ -78,3 +78,20 @@ test('stamp 连续调用不撞名（同毫秒内两次备份不能写到同一�
   const seen = new Set(Array.from({ length: 200 }, () => S.stamp()));
   assert.equal(seen.size, 200);
 });
+
+test('listBackupsIn 按落盘时间排，latestBackupIn 取到真正最新的那份', () => {
+  const dir = tmp('backups');
+  const bd = path.join(dir, 'backups');
+  fs.mkdirSync(bd, { recursive: true });
+  // 两种 stamp 格式同目录：带横杠的名字字典序更"旧"，但它是最后落盘的
+  const dashed = 'profiles.yaml.20260930-235959-999-001.bak';
+  const plain = 'profiles.yaml.20260930120000000-001.bak';
+  fs.writeFileSync(path.join(bd, plain), 'STALE');
+  fs.writeFileSync(path.join(bd, dashed), 'NEWEST');
+  const at = (h) => new Date(Date.UTC(2026, 8, 30, h, 0, 0));
+  fs.utimesSync(path.join(bd, plain), at(1), at(1));
+  fs.utimesSync(path.join(bd, dashed), at(23), at(23));
+  assert.deepEqual(S.listBackupsIn(bd), [plain, dashed], '升序：更早的在前');
+  assert.equal(S.latestBackupIn(bd, 'profiles.yaml'), path.join(bd, dashed));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
