@@ -6729,15 +6729,15 @@ git commit -m "docs: qoder-vpn-proxy 验收记录与 spec 未验证项结论"
 
 **跑了什么**：CVR 真实启动 → 17 个工具逐个真调 → 9 条验收取证据 → `proxy_core_stop` 收尾还原。全量测试从 147 涨到 **154**（`node --test --test-force-exit`，`# fail 0`）。完整证据在 `docs/superpowers/verification/2026-09-30-acceptance.md`，管道与端点矩阵在 `docs/superpowers/probes/01-named-pipe.md`，安装过程在 `probes/03-plugin-install.md`。
 
-**Step 3 的 Expected 有一处不成立**：草稿假定 `PUT /configs` 能改 mode。真机 mihomo v1.19.25 对 `PUT /configs` **回 204 却什么都不改**，只有 `PATCH` 生效。已按 TDD 改 `clash-client.js` 用 PATCH，并把 `fake-mihomo.js` 的 PUT 分支改成"回 204 但不改状态"，让 fake 与真机一致（commit `25093e7`）。
+**Step 3 的 Expected 有一处不成立**：草稿假定 `PUT /configs` 能改 mode。真机 mihomo v1.19.25 对 `PUT /configs` **回 204 却什么都不改**，只有 `PATCH` 生效。已按 TDD 改 `clash-client.js` 用 PATCH，并把 `fake-mihomo.js` 的 PUT 分支改成"回 204 但不改状态"，让 fake 与真机一致（commit `043d6b9`）。
 
-**Step 3 还暴露一个解析 bug**：curl 8.17.0 在连接失败时 `%{remote_ip}` 打的是**空串**，`parseCurlOut` 的四段正则整行匹配失败，把 `totalMs` 一起丢了（表现是 `direct.totalMs: null`）。第 4 段改成可选 + `remoteIp: m[4] ?? null`（commit `280cf21`）。
+**Step 3 还暴露一个解析 bug**：curl 8.17.0 在连接失败时 `%{remote_ip}` 打的是**空串**，`parseCurlOut` 的四段正则整行匹配失败，把 `totalMs` 一起丢了（表现是 `direct.totalMs: null`）。第 4 段改成可选 + `remoteIp: m[4] ?? null`（commit `5f8ced4`）。
 
-**Step 5 的备用路径没被触发**：计划预设"若 `profile_registry_desync` 就先停核心再改订阅"，实测全程没出现 —— 插件的写后重读校验都过了。但真机给出另一条更硬的事实：**mihomo v1.19.25 没有 `POST /configs/reload`（404）**，所以 `activate` 原本把"注册表已写成功"误报成 `channel_unavailable` 失败。改成 best-effort reload + `{reloaded, needsRestart, note}` 如实上报（commit `0c105ac`），README/SKILL 同步。
+**Step 5 的备用路径没被触发**：计划预设"若 `profile_registry_desync` 就先停核心再改订阅"，实测全程没出现 —— 插件的写后重读校验都过了。但真机给出另一条更硬的事实：**mihomo v1.19.25 没有 `POST /configs/reload`（404）**，所以 `activate` 原本把"注册表已写成功"误报成 `channel_unavailable` 失败。改成 best-effort reload + `{reloaded, needsRestart, note}` 如实上报（commit `c46e474`），README/SKILL 同步。
 
-**Step 8 的 `proxy_core_stop` 原本会撤销用户刚做的订阅切换**：`stop()` 回滚整个 `DEFAULT_BACKUP_NAMES = ['verge.yaml','profiles.yaml']`，而 `profiles.yaml` 是持久用户数据。收窄到 `SESSION_RESTORE_NAMES = ['verge.yaml']`（同上 commit `0c105ac`），测试断言 `restoredList` 只有 verge.yaml 且 `current` 保住。
+**Step 8 的 `proxy_core_stop` 原本会撤销用户刚做的订阅切换**：`stop()` 回滚整个 `DEFAULT_BACKUP_NAMES = ['verge.yaml','profiles.yaml']`，而 `profiles.yaml` 是持久用户数据。收窄到 `SESSION_RESTORE_NAMES = ['verge.yaml']`（同上 commit `c46e474`），测试断言 `restoredList` 只有 verge.yaml 且 `current` 保住。
 
-**Step 7 的备份排序是错的**：`listBackups`/`latestBackupIn` 按文件名字典序取"最新"，而目录里混着两种时间戳格式（`20260930-123930-488-001` 与 `20260930130959726-001`），字典序会挑到过期那份，`restore` 就退回更老状态。改按 `mtimeMs` 排、名字作 tiebreak（commit `29196d1`），测试用 `utimesSync` 钉 mtime 复现。
+**Step 7 的备份排序是错的**：`listBackups`/`latestBackupIn` 按文件名字典序取"最新"，而目录里混着两种时间戳格式（`20260930-123930-488-001` 与 `20260930130959726-001`），字典序会挑到过期那份，`restore` 就退回更老状态。改按 `mtimeMs` 排、名字作 tiebreak（commit `1cc84bc`），测试用 `utimesSync` 钉 mtime 复现。
 
 **Step 8 的一条命令在 Git Bash 下跑不通**：`cmd //c "reg query … //v ProxyEnable"` 的参数被 MSYS 转换搅坏，`reg.exe` 报"无效语法/无效参数"（GBK 乱码输出），失败会被 `|| echo "系统代理关闭"` 吞成假绿。改用 `execFileSync('reg', ['query', <key>, '/v', <value>])` 的独立探针（scratch `qvp-reg.js`），实测 `ProxyEnable = 0x0`。**下一个人别照抄那条 cmd 命令。**
 
