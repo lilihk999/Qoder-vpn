@@ -113,14 +113,21 @@ class CvrConfig {
 
   listBackups() {
     if (!this.fs.existsSync(this.backupDir)) return [];
-    return this.fs.readdirSync(this.backupDir)
+    const entries = this.fs.readdirSync(this.backupDir)
       // readdirSync 给的是裸文件名，所以这里必须从行首匹配 `verge.yaml.<ts>.bak`
       .filter((f) => /^(?:verge|profiles|config)\.yaml\.[\d-]+\.bak$/.test(f))
       .map((f) => {
         const m = /^(.*)\.([\d-]+)\.bak$/.exec(f);
         return { name: m[1], ts: m[2], backupPath: path.join(this.backupDir, f) };
-      })
-      .sort((a, b) => (a.ts < b.ts ? 1 : -1));
+      });
+    const mtime = new Map(entries.map((e) => [e.backupPath, this.mtimeOf(e.backupPath)]));
+    // 目录里混着两种时间戳（cvr-config 带横杠、subscriptions 走 store.stamp 不带），
+    // '-' 比数字小，按文件名字典序会把更晚的带横杠备份判成最旧，restore 就会挑到过期那份。
+    return entries.sort((a, b) => (mtime.get(b.backupPath) - mtime.get(a.backupPath)) || (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+  }
+
+  mtimeOf(p) {
+    try { return this.fs.statSync(p).mtimeMs; } catch { return 0; }
   }
 
   latestBackupFor(name) {

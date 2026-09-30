@@ -61,9 +61,12 @@ function moveToTrash(d, absPath) {
 
 function listTrash(d) { try { return fs.readdirSync(d.trash); } catch { return []; } }
 
-/** 备份目录里的文件名，按时间顺序（stamp 前缀可字典序排） */
+/** 备份目录里的文件名，按落盘时间升序（两种 stamp 格式混在同一目录，字典序会排错） */
 function listBackupsIn(dirPath) {
-  try { return fs.readdirSync(dirPath).filter((f) => /\.[\d-]+\.bak$/.test(f)).sort(); } catch { return []; }
+  let files;
+  try { files = fs.readdirSync(dirPath).filter((f) => /\.[\d-]+\.bak$/.test(f)); } catch { return []; }
+  const mtime = (f) => { try { return fs.statSync(path.join(dirPath, f)).mtimeMs; } catch { return 0; } };
+  return files.sort((a, b) => (mtime(a) - mtime(b)) || (a < b ? -1 : a > b ? 1 : 0));
 }
 
 function latestBackupIn(dirPath, name) {
