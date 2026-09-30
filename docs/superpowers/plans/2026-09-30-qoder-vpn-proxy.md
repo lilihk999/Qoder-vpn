@@ -3189,24 +3189,24 @@ git commit -m "feat: profilesYaml 外科式编辑(round-trip 恒等为主验收)
 - Test: `qoder-vpn-proxy/test/subscriptions.test.js`
 
 **Interfaces:**
-- Consumes: `parseProfilesYaml`/`mergeController` (Task 8)、`patchScalar`/`CvrConfig.backup` (Task 10)、`profilesYaml.*` (Task 11)、`fetchSubscription` (Task 5)、`ClashClient.reload` (Task 9)、`ApiError` (Task 3)、`redactUrl` (Task 3)
+- Consumes: `profilesYaml.*` (Task 11)、`fetchSubscription` (Task 5)、`ClashClient.reload`/`getProxies` (Task 9)、`ApiError` (Task 3)、`redactUrl` (Task 3)。备份只走本层的 `inlineBackup()` + `store.stamp()`，与 `CvrConfig` 的备份同名不同路（见 Step 6）。
 - Produces:
   - `store.dataDir(env?) -> string`（`QODER_VPN_PROXY_DATA` 覆盖，默认 `path.join(os.homedir(), '.qoder', 'vpn-proxy')`）
   - `store.dirs(env?) -> {root, backups, trash, logs}`
   - `store.ensure(dirs) -> dirs`
   - `store.readJson(file, fallback)`、`store.writeJsonAtomic(file, value)`
   - `store.moveToTrash(dirs, absPath) -> trashPath`
-  - `store.listTrash(dirs) -> [name]`
-  - `store.restoreFromTrash(dirs, name, dest)`
-  - `class SubscriptionRepo({configDir, dirs, profilesPath?, client?, fetchImpl?, now?})`
-    - `readProfiles() -> {current, items[]}`（每次现读，不缓存）
+  - `store.listTrash(dirs) -> [name]`、`store.listBackupsIn(dir) -> [name]`、`store.latestBackupIn(dir, name) -> string|null`
+  - `store.restoreFromTrash(dirs, name, dest)`、`store.stamp() -> string`（`yyyyMMddHHmmssSSS-NNN`，与 `CvrConfig` 备份同名规则）
+  - `class SubscriptionRepo({configDir, dirs, client?, fetchImpl?, now?, fsImpl?})`
+    - `items() -> [...]`、`current() -> uid|null`、`registryText() -> string`（每次现读，不缓存）
     - `async list() -> Entry[]`
     - `async add({url, name?, remark?, activate?, autoUpdate?, updateInterval?}) -> Entry`
     - `async edit(uid, {url?, name?, remark?, autoUpdate?, updateInterval?}) -> Entry`
-    - `async update(uid) -> Entry`（重抓并写回 profile 内容文件 + `updated` + `extra`）
-    - `async updateAll() -> {results:[{uid, ok, ...}]}`
-    - `async activate(uid) -> {current, groups, now}`
-    - `async remove(uid, {force?}) -> {trashed}``
+    - `async update(uid, {fetchImpl?}) -> Entry`（重抓并写回 profile 内容文件 + `updated` + `extra`）
+    - `async updateAll({fetchImpl?}) -> {results:[{uid, ok, ...}]}`
+    - `async activate(uid) -> {current, groups}`
+    - `async remove(uid, {force?}) -> {removed, trashed, undo}`
     - `Entry = {uid, name, url(redacted), urlPathOnly, file, type, active, nodes, userInfo, updated, autoUpdate, updateInterval, remark, addedAt, source}`
   - 写 `profiles.yaml` 一律：`backup → 写 → 立即重读校验 → 不一致则从备份回滚并抛 profile_registry_desync`
 
@@ -3230,40 +3230,48 @@ test('dataDir 默认在 ~/.qoder/vpn-proxy，可用环境变量覆盖', () => {
   assert.equal(S.dataDir({ QODER_VPN_PROXY_DATA: '/custom/dir' }), '/custom/dir');
 });
 
+test('dirs 给出四个子目录', () => {
+  const dir = tmp('dirs');
+  const d = S.dirs({ QODER_VPN_PROXY_DATA: dir });
+  assert.deepEqual(Object.keys(d).sort(), ['backups', 'logs', 'root', 'trash']);
+  assert.equal(d.root, dir);
+  assert.equal(d.backups, path.join(dir, 'backups'));
+});
+
 test('ensure 造出四个子目录且可重复调用', () => {
-  const root = tmp('ensure');
-  fs.rmSync(root, { recursive: true, force: true });
-  const d = S.dirs({ QODER_VPN_PROXY_DATA: root });
+  const dir = tmp('ensure');
+  fs.rmSync(dir, { recursive: true, force: true });
+  const d = S.dirs({ QODER_VPN_PROXY_DATA: dir });
   S.ensure(d); S.ensure(d);
   for (const k of ['root', 'backups', 'trash', 'logs']) assert.ok(fs.existsSync(d[k]), k);
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('writeJsonAtomic 覆盖旧值且不留 .tmp', () => {
-  const root = tmp('json');
-  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: root }));
+  const dir = tmp('json');
+  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: dir }));
   const f = path.join(d.root, 'subscriptions.json');
   S.writeJsonAtomic(f, { a: 1 });
   S.writeJsonAtomic(f, { a: 2, b: 3 });
   assert.deepEqual(S.readJson(f, null), { a: 2, b: 3 });
   assert.deepEqual(fs.readdirSync(d.root).filter((x) => x.includes('.tmp')), []);
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('readJson 对损坏文件回 fallback 而不是抛', () => {
-  const root = tmp('broken');
-  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: root }));
+  const dir = tmp('broken');
+  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: dir }));
   const f = path.join(d.root, 'x.json');
   fs.writeFileSync(f, '{不是 json');
   assert.equal(S.readJson(f, null), null);
   assert.deepEqual(S.readJson(f, []), []);
   assert.equal(S.readJson(path.join(d.root, 'missing.json'), '兜底'), '兜底');
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('moveToTrash 可撤销：移走再还原内容一致', () => {
-  const root = tmp('trash');
-  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: root }));
+  const dir = tmp('trash');
+  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: dir }));
   const src = path.join(d.root, 'victim.yaml');
   fs.writeFileSync(src, '原内容\n');
   const moved = S.moveToTrash(d, src);
@@ -3273,14 +3281,19 @@ test('moveToTrash 可撤销：移走再还原内容一致', () => {
   const back = path.join(d.root, 'restored.yaml');
   S.restoreFromTrash(d, path.basename(moved), back);
   assert.equal(fs.readFileSync(back, 'utf8'), '原内容\n');
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('moveToTrash 对不存在的文件抛 config_write_failed', () => {
-  const root = tmp('trash2');
-  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: root }));
+  const dir = tmp('trash2');
+  const d = S.ensure(S.dirs({ QODER_VPN_PROXY_DATA: dir }));
   assert.throws(() => S.moveToTrash(d, path.join(d.root, 'nope.yaml')), (e) => e.kind === 'config_write_failed');
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('stamp 连续调用不撞名（同毫秒内两次备份不能写到同一个文件）', () => {
+  const seen = new Set(Array.from({ length: 200 }, () => S.stamp()));
+  assert.equal(seen.size, 200);
 });
 ```
 
@@ -3306,7 +3319,9 @@ function dirs(env = process.env) {
 }
 
 function ensure(d) {
-  for (const p of Object.values(d)) { try { fs.mkdirSync(p, { recursive: true }); } catch (e) { if (e.code !== 'EEXIST') throw e; } }
+  for (const p of Object.values(d)) {
+    try { fs.mkdirSync(p, { recursive: true }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  }
   return d;
 }
 
@@ -3326,10 +3341,13 @@ function writeJsonAtomic(file, value) {
   }
 }
 
+let seq = 0;
+
+// 毫秒不够：同一毫秒内的两次备份会写到同一个文件名，后一次把前一次盖掉
 function stamp() {
   const d = new Date();
   const p = (n, w = 2) => String(n).padStart(w, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${p(d.getMilliseconds(), 3)}`;
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${p(d.getMilliseconds(), 3)}-${String(seq += 1).padStart(3, '0')}`;
 }
 
 function moveToTrash(d, absPath) {
@@ -3347,6 +3365,16 @@ function moveToTrash(d, absPath) {
 
 function listTrash(d) { try { return fs.readdirSync(d.trash); } catch { return []; } }
 
+/** 备份目录里的文件名，按时间顺序（stamp 前缀可字典序排） */
+function listBackupsIn(dirPath) {
+  try { return fs.readdirSync(dirPath).filter((f) => /\.[\d-]+\.bak$/.test(f)).sort(); } catch { return []; }
+}
+
+function latestBackupIn(dirPath, name) {
+  const hits = listBackupsIn(dirPath).filter((f) => f.startsWith(`${name}.`));
+  return hits.length ? path.join(dirPath, hits[hits.length - 1]) : null;
+}
+
 function restoreFromTrash(d, name, dest) {
   const src = path.join(d.trash, name);
   if (!fs.existsSync(src)) throw new ApiError('config_write_failed', `回收目录里没有 ${name}`, '用 proxy_restore_config 查看当前可还原项');
@@ -3354,7 +3382,10 @@ function restoreFromTrash(d, name, dest) {
   catch (e) { throw new ApiError('config_write_failed', `还原 ${name} 失败: ${e.code || e.message}`, ''); }
 }
 
-module.exports = { dataDir, dirs, ensure, readJson, writeJsonAtomic, moveToTrash, listTrash, restoreFromTrash, stamp };
+module.exports = {
+  dataDir, dirs, ensure, readJson, writeJsonAtomic, stamp,
+  moveToTrash, listTrash, listBackupsIn, latestBackupIn, restoreFromTrash,
+};
 ```
 
 - [ ] **Step 3: 跑 store 测试**
@@ -3374,14 +3405,28 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const store = require('../server/store');
+const P = require('../server/profilesYaml');
 const { SubscriptionRepo } = require('../server/subscriptions');
-const { CvrConfig } = require('../server/cvr-config');
 
 const PROFILES = fs.readFileSync(path.join(__dirname, 'fixtures', 'cvr-profiles.yaml'), 'utf8');
+const FIXTURE_URL = 'https://panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER';
 
-const FETCH_OK = { format: 'yaml', yaml: 'proxies:\n- name: HK 1\n  server: 192.0.2.10\nproxy-groups: []\n', nodes: 3, bytes: 20000, name: '新机场', userInfo: { upload: 1, download: 2, total: 1 << 30, expire: 1798761600 } };
-let fetchCalls = [];
-const fetchImpl = async (url) => { fetchCalls.push(url); if (url.includes('bad')) { const e = new Error('html'); e.kind = 'subscription_format_unexpected'; throw e; } return FETCH_OK; };
+const FETCH_OK = {
+  format: 'yaml',
+  yaml: 'proxies:\n- name: HK 1\n  server: 192.0.2.10\nproxy-groups: []\n',
+  nodes: 3,
+  bytes: 20000,
+  name: '新机场',
+  userInfo: { upload: 1, download: 2, total: 1 << 30, expire: 1798761600 },
+};
+const fetchImpl = async (url) => {
+  if (url.includes('bad')) {
+    const e = new Error('html');
+    e.kind = 'subscription_format_unexpected';
+    throw e;
+  }
+  return FETCH_OK;
+};
 
 function sandbox(t) {
   const dir = path.join(os.tmpdir(), `qvp-sub-${t}-${process.pid}`);
@@ -3392,8 +3437,12 @@ function sandbox(t) {
   fs.writeFileSync(path.join(configDir, 'verge.yaml'), 'enable_system_proxy: true\nenable_proxy_guard: true\n');
   const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: path.join(dir, 'data') }));
   const reloads = [];
-  const client = { reload: async (o) => { reloads.push(o); return { reloaded: true }; }, getProxies: async () => ({ groups: [{ name: '节点选择', now: 'HK 1', all: ['HK 1'], type: 'Selector' }], nodes: ['HK 1'] }), close() {} };
-  const repo = new SubscriptionRepo({ configDir, dirs, fetchImpl, now: () => 1790000000, client, cvr: new CvrConfig({ configDir, backupDir: dirs.backups, fsImpl: fs }) });
+  const client = {
+    reload: async (o) => { reloads.push(o); return { reloaded: true }; },
+    getProxies: async () => ({ groups: [{ name: '节点选择', now: 'HK 1', all: ['HK 1'], type: 'Selector' }], nodes: ['HK 1'] }),
+    close() {},
+  };
+  const repo = new SubscriptionRepo({ configDir, dirs, fetchImpl, now: () => 1790000000, client });
   return { dir, configDir, dirs, repo, reloads };
 }
 
@@ -3406,12 +3455,14 @@ test('首次 list 从 profiles.yaml 导入 remote 项，url 已脱敏', async ()
   assert.equal(items[0].active, true);
   assert.equal(items[0].source, 'cvr');
   assert.match(items[0].url, /token=<redacted>$/);
+  assert.ok(!items[0].urlPathOnly.includes('TOKEN_PLACEHOLDER'), 'urlPathOnly 也不能带 query');
+  assert.equal(items[0].nodes, null, '没抓过就报 null，不能编节点数');
   assert.ok(!JSON.stringify(items).includes('TOKEN_PLACEHOLDER'), '任何字段都不出现原 token');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('add 生成 12 位 uid、写 profile 文件与注册表、返回条目', async () => {
-  const { dir, configDir, repo } = sandbox('add');
+  const { dir, configDir, dirs, repo } = sandbox('add');
   const e = await repo.add({ url: 'https://b.test/sub?token=XYZ', name: '第二家', remark: '备用' });
   assert.match(e.uid, /^[A-Za-z0-9]{12}$/);
   assert.equal(e.name, '第二家');
@@ -3422,13 +3473,35 @@ test('add 生成 12 位 uid、写 profile 文件与注册表、返回条目', as
   const raw = fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8');
   assert.ok(raw.includes(`uid: ${e.uid}`));
   assert.ok(raw.includes('token=XYZ'), 'profiles.yaml 里是原 token（CVR 需要用它抓取）');
+  // 备份命名要跟 CvrConfig 一致，Task 15 的 proxy_restore_config 靠这个正则找可还原项
+  assert.ok(store.listBackupsIn(dirs.backups).some((f) => /^profiles\.yaml\.[\d-]+\.bak$/.test(f)), '写注册表前必须已有备份');
   assert.equal((await repo.list()).length, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('add 只追加：原有 8 项逐字段完好', async () => {
+  const { dir, configDir, repo } = sandbox('add-intact');
+  const before = P.listItems(PROFILES);
+  const e = await repo.add({ url: 'https://b.test/sub?token=XYZ' });
+  const after = P.listItems(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8'));
+  assert.equal(after.length, 9);
+  for (const b of before) assert.deepEqual(after.find((i) => i.uid === b.uid), b, `${b.uid} 应保持原样`);
+  assert.equal(P.render(P.parse(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8'))), fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8'));
+  assert.ok(after.find((i) => i.uid === e.uid).url.includes('token=XYZ'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('add 的 url 重复时报 subscription_duplicate 并给出已有 uid', async () => {
   const { dir, repo } = sandbox('dup');
-  await assert.rejects(repo.add({ url: 'https://sub.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER' }), (e) => e.kind === 'subscription_duplicate' && /Rq14DVii2DNo/.test(e.hint + e.message));
+  await assert.rejects(repo.add({ url: FIXTURE_URL }), (e) => e.kind === 'subscription_duplicate' && /Rq14DVii2DNo/.test(e.hint + e.message));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('add 非法 url 时报 subscription_url_invalid 且不抓取', async () => {
+  const { dir, repo } = sandbox('badurl');
+  await assert.rejects(repo.add({ url: 'ping.example.invalid/sub' }), (e) => e.kind === 'subscription_url_invalid');
+  await assert.rejects(repo.add({ url: '' }), (e) => e.kind === 'subscription_url_invalid');
+  assert.equal((await repo.list()).length, 1, '没写出第二项');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -3440,14 +3513,33 @@ test('add 带 activate:true 时改 current 并 reload', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('add 抓取失败时一个文件都不写', async () => {
+  const { dir, configDir, repo } = sandbox('addfetchfail');
+  const before = fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8');
+  await assert.rejects(repo.add({ url: 'https://bad.test/sub?token=X' }), (e) => e.kind === 'subscription_format_unexpected');
+  assert.equal(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8'), before);
+  assert.equal(store.listBackupsIn(path.join(dir, 'data', 'backups')).length, 0, '没写就不该有备份');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('edit 改 url（token 轮换）后旧 profile 文件不被破坏', async () => {
   const { dir, configDir, repo } = sandbox('edit');
   fs.writeFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), '# 原订阅内容\nproxies: []\n');
   const before = fs.readFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), 'utf8');
-  const e = await repo.edit('Rq14DVii2DNo', { url: 'https://sub.example.invalid/SUBPATH?token=NEW' });
+  const e = await repo.edit('Rq14DVii2DNo', { url: 'https://panel.example.invalid/NEWPATH?token=NEW' });
   assert.match(e.url, /token=<redacted>$/);
   assert.ok(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8').includes('token=NEW'));
   assert.equal(fs.readFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), 'utf8'), before, 'edit url 不动内容文件；只有 update 才重写');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('edit 只改备注时不碰 profiles.yaml', async () => {
+  const { dir, configDir, repo } = sandbox('edit-remark');
+  const before = fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8');
+  const e = await repo.edit('Rq14DVii2DNo', { remark: '主力' });
+  assert.equal(e.remark, '主力');
+  assert.equal(e.source, 'cvr', '只改备注不把它说成插件创建的');
+  assert.equal(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8'), before, 'CVR 拥有的文件一个字节都不动');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -3467,6 +3559,7 @@ test('update 重写内容文件并回写 updated/extra', async () => {
   const raw = fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8');
   assert.ok(raw.includes('updated: 1790000000'));
   assert.ok(raw.includes('total: 1073741824'));
+  assert.equal(P.render(P.parse(raw)), raw, '回写后仍要满足 round-trip 恒等');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -3474,7 +3567,10 @@ test('update 抓取失败时保留旧配置（内容文件与注册表都不动�
   const { dir, configDir, repo } = sandbox('updatefail');
   const profilesBefore = fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8');
   fs.writeFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), '# 旧内容\n');
-  await assert.rejects(repo.update('Rq14DVii2DNo', { fetchImpl: async () => { const e = new Error('boom'); e.kind = 'subscription_format_unexpected'; throw e; } }), (e) => e.kind === 'subscription_format_unexpected');
+  await assert.rejects(
+    repo.update('Rq14DVii2DNo', { fetchImpl: async () => { const e = new Error('boom'); e.kind = 'subscription_format_unexpected'; throw e; } }),
+    (e) => e.kind === 'subscription_format_unexpected'
+  );
   assert.equal(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8'), profilesBefore);
   assert.equal(fs.readFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), 'utf8'), '# 旧内容\n');
   fs.rmSync(dir, { recursive: true, force: true });
@@ -3533,11 +3629,29 @@ test('写 profiles.yaml 后被外部覆盖 -> profile_registry_desync 并回滚'
 test('updateAll 一条失败不影响另一条', async () => {
   const { dir, repo } = sandbox('all');
   await repo.add({ url: 'https://b.test/sub?token=XYZ', name: '好的' });
-  const out = await repo.updateAll({ fetchImpl: async (url) => { if (url.includes('SUBPATH')) { const e = new Error('html'); e.kind = 'subscription_format_unexpected'; throw e; } return FETCH_OK; } });
+  const out = await repo.updateAll({
+    fetchImpl: async (url) => {
+      if (url.includes('panel.example.invalid')) {
+        const e = new Error('html');
+        e.kind = 'subscription_format_unexpected';
+        throw e;
+      }
+      return FETCH_OK;
+    },
+  });
   assert.equal(out.results.length, 2);
   assert.equal(out.results.filter((r) => r.ok).length, 1);
   assert.equal(out.results.filter((r) => !r.ok).length, 1);
   assert.equal(out.results.find((r) => !r.ok).kind, 'subscription_format_unexpected');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('updateAll 跳过 autoUpdate 关闭的项', async () => {
+  const { dir, repo } = sandbox('all-skip');
+  const e = await repo.add({ url: 'https://b.test/sub?token=XYZ', autoUpdate: false });
+  const out = await repo.updateAll();
+  assert.equal(out.results.find((r) => r.uid === e.uid).kind, 'skipped');
+  assert.equal(out.results.filter((r) => r.ok).length, 1, '另一条（当前订阅）照常更新');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 ```
@@ -3553,7 +3667,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const store = require('./store');
 const P = require('./profilesYaml');
-const { ApiError, fail } = require('./envelope');
+const { ApiError } = require('./envelope');
 const { redactUrl } = require('./redact');
 const defaultFetch = require('./subscription').fetchSubscription;
 
@@ -3567,36 +3681,36 @@ function newUid(len = 12) {
   return out;
 }
 
+const isUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u.trim());
+
 class SubscriptionRepo {
-  constructor({ configDir, dirs, client = null, fetchImpl = defaultFetch, now = () => Math.floor(Date.now() / 1000), cvr = null, fsImpl = fs } = {}) {
+  constructor({
+    configDir, dirs, client = null, fetchImpl = defaultFetch,
+    now = () => Math.floor(Date.now() / 1000), fsImpl = fs,
+  } = {}) {
     if (!configDir || !dirs) throw new ApiError('config_write_failed', 'SubscriptionRepo 需要 configDir 与 dirs', '');
     this.configDir = configDir;
     this.dirs = dirs;
     this.client = client;
     this.fetchImpl = fetchImpl;
     this.now = now;
-    this.cvr = cvr;
     this.fs = fsImpl;
     this.registryPath = path.join(configDir, REGISTRY);
     this.profilesDir = path.join(configDir, 'profiles');
     this.metaPath = path.join(dirs.root, 'subscriptions.json');
   }
 
-  readProfiles() {
-    if (!this.fs.existsSync(this.registryPath)) throw new ApiError('not_installed', `找不到 ${this.registryPath}`, 'Clash Verge 配置目录不完整');
-    const text = this.fs.readFileSync(this.registryPath, 'utf8');
-    try { return P.parse(text) && { current: P.getItem ? P.listItems(text) : [], raw: text }; }
-    catch (e) { throw new ApiError('malformed_config', `profiles.yaml 解析失败: ${e.message}`, '用 proxy_restore_config 还原备份'); }
+  registryText() {
+    if (!this.fs.existsSync(this.registryPath)) {
+      throw new ApiError('not_installed', `找不到 ${this.registryPath}`, 'Clash Verge 配置目录不完整');
+    }
+    return this.fs.readFileSync(this.registryPath, 'utf8');
   }
 
-  items() {
-    if (!this.fs.existsSync(this.registryPath)) throw new ApiError('not_installed', `找不到 ${this.registryPath}`, 'Clash Verge 配置目录不完整');
-    return P.listItems(this.fs.readFileSync(this.registryPath, 'utf8'));
-  }
+  items() { return P.listItems(this.registryText()); }
 
   current() {
-    if (!this.fs.existsSync(this.registryPath)) return null;
-    const m = /^current:[ \t]*(.*)$/m.exec(this.fs.readFileSync(this.registryPath, 'utf8'));
+    const m = /^current:[ \t]*(.*)$/m.exec(this.registryText());
     return m ? m[1].trim() : null;
   }
 
@@ -3610,13 +3724,14 @@ class SubscriptionRepo {
       uid: item.uid,
       name: item.name || meta.name || item.uid,
       url: item.url ? redactUrl(item.url) : null,
+      urlPathOnly: item.url ? item.url.replace(/[?#].*$/, '') : null,
       file: item.file,
       type: item.type,
       active: item.uid === currentUid,
       nodes: meta.nodes ?? null,
       userInfo: meta.userInfo ?? null,
       updated: item.updated ? Number(item.updated) : null,
-      autoUpdate: meta.autoUpdate ?? (item.option && item.option.allow_auto_update === 'true' ? true : undefined),
+      autoUpdate: meta.autoUpdate ?? (item.option && item.option.allow_auto_update ? item.option.allow_auto_update === 'true' : undefined),
       updateInterval: meta.updateInterval ?? (item.option && item.option.update_interval ? Number(item.option.update_interval) : undefined),
       remark: meta.remark ?? '',
       addedAt: meta.addedAt ?? null,
@@ -3632,24 +3747,39 @@ class SubscriptionRepo {
       .map((i) => this.toEntry(i, currentUid, metaById));
   }
 
-  remoteByUrl(url) {
-    return this.items().find((i) => i.url && i.url === url) || null;
-  }
+  remoteByUrl(url) { return this.items().find((i) => i.url && i.url === url) || null; }
 
   mustFind(uid) {
-    const item = this.items().find((i) => i.uid === uid);
+    const items = this.items();
+    const item = items.find((i) => i.uid === uid);
     if (item) return item;
-    const known = this.items().filter((i) => i.type === 'remote').map((i) => `${i.uid}(${redactUrl(i.url || '')})`).join(' / ');
+    // hint 用 uid(名字) 而不是 uid(脱敏 url)：用户认的是名字
+    const known = items.filter((i) => i.type === 'remote').map((i) => `${i.uid}(${i.name || redactUrl(i.url || '')})`).join(' / ');
     throw new ApiError('subscription_not_found', `清单里没有 uid ${uid}`, `现有订阅：${known || '（空）'}`);
   }
 
-  /** 备份 -> 写 -> 重读校验 -> 不一致回滚。spec §4 的硬性顺序 */
+  inlineBackup(name) {
+    const src = path.join(this.configDir, name);
+    if (!this.fs.existsSync(src)) return null;
+    this.fs.mkdirSync(this.dirs.backups, { recursive: true });
+    const dest = path.join(this.dirs.backups, `${name}.${store.stamp()}.bak`);
+    this.fs.copyFileSync(src, dest);
+    return dest;
+  }
+
+  /** 备份 -> 写 -> 立即重读校验 -> 不一致回滚。CVR 运行时会把内存态回写这个文件 */
   writeRegistry(nextText, { expect } = {}) {
-    const backups = this.cvr ? this.cvr.backupSync([REGISTRY]) : [{ name: REGISTRY, backupPath: this.inlineBackup(REGISTRY), ts: store.stamp() }];
+    const backupPath = this.inlineBackup(REGISTRY);
+    const backups = backupPath ? [{ name: REGISTRY, backupPath, ts: store.stamp() }] : [];
+    const rollback = () => {
+      for (const b of backups) {
+        try { this.fs.copyFileSync(b.backupPath, this.registryPath); } catch { /* 回滚失败也照样报 desync */ }
+      }
+    };
     this.fs.writeFileSync(this.registryPath, nextText, 'utf8');
     const reread = this.fs.readFileSync(this.registryPath, 'utf8');
     if (reread !== nextText) {
-      for (const b of backups) { try { this.fs.copyFileSync(b.backupPath, this.registryPath); } catch { /* 回滚失败也报 desync */ } }
+      rollback();
       throw new ApiError(
         'profile_registry_desync',
         `写入 ${REGISTRY} 后重读不一致，已回滚`,
@@ -3660,20 +3790,12 @@ class SubscriptionRepo {
       for (const [uid, url] of Object.entries(expect)) {
         const it = P.getItem(reread, uid);
         if (!it || (url !== undefined && it.url !== url)) {
-          for (const b of backups) { try { this.fs.copyFileSync(b.backupPath, this.registryPath); } catch { /* ignore */ } }
+          rollback();
           throw new ApiError('profile_registry_desync', `重读 profiles.yaml 时 uid ${uid} 与预期不符，已回滚`, '写入被外部状态覆盖；建议在 CVR 停止时操作');
         }
       }
     }
     return backups;
-  }
-
-  inlineBackup(name) {
-    const src = path.join(this.configDir, name);
-    if (!this.fs.existsSync(src)) return null;
-    const dest = path.join(this.dirs.backups, `${name}.${store.stamp()}.bak`);
-    this.fs.copyFileSync(src, dest);
-    return dest;
   }
 
   writeProfileFile(uid, yamlText) {
@@ -3684,17 +3806,16 @@ class SubscriptionRepo {
   }
 
   async add({ url, name, remark = '', activate = false, autoUpdate = true, updateInterval = 1440 }) {
-    if (typeof url !== 'string' || !/^https?:\/\//i.test(url.trim())) {
-      throw new ApiError('subscription_url_invalid', '订阅地址必须是完整的 http(s) 链接', '示例：https://机场域名/路径?token=xxx');
-    }
-    const clean = url.trim();
+    if (!isUrl(url)) throw new ApiError('subscription_url_invalid', '订阅地址必须是完整的 http(s) 链接', '示例：https://机场域名/路径?token=xxx');
+    const clean = String(url).trim();
     const dup = this.remoteByUrl(clean);
     if (dup) throw new ApiError('subscription_duplicate', `该链接已存在（uid ${dup.uid}）`, '如要刷新内容用 proxy_subscription_update，如要换地址用 proxy_subscription_edit');
 
+    // 先抓再写：抓不到就一个字节都不动
     const fetched = await this.fetchImpl(clean);
     const uid = newUid();
     const entryName = name || fetched.name || uid;
-    const text = this.fs.readFileSync(this.registryPath, 'utf8');
+    const text = this.registryText();
     const item = {
       uid, type: 'remote', name: entryName, file: `${uid}.yaml`, url: clean,
       selected: { name: entryName, now: '' },
@@ -3708,7 +3829,8 @@ class SubscriptionRepo {
       option: { update_interval: updateInterval, allow_auto_update: Boolean(autoUpdate) },
     };
     if (fetched.yaml) this.writeProfileFile(uid, fetched.yaml);
-    else this.writeProfileFile(uid, `# base64 订阅：节点串由 CVR 抓取时展开\n# added-by: qoder-vpn-proxy\n`);
+    else this.writeProfileFile(uid, '# base64 订阅：节点串由 CVR 抓取时展开\n# added-by: qoder-vpn-proxy\n');
+
     let next = P.appendItem(text, item);
     if (activate) next = P.setCurrent(next, uid);
     this.writeRegistry(next, { expect: { [uid]: clean } });
@@ -3726,31 +3848,32 @@ class SubscriptionRepo {
 
   async edit(uid, { url, name, remark, autoUpdate, updateInterval } = {}) {
     this.mustFind(uid);
-    const text = this.fs.readFileSync(this.registryPath, 'utf8');
+    const text = this.registryText();
     let next = text;
     let fetched = null;
 
     if (url !== undefined) {
-      if (!/^https?:\/\//i.test(String(url).trim())) throw new ApiError('subscription_url_invalid', '订阅地址必须是完整的 http(s) 链接', '');
+      if (!isUrl(url)) throw new ApiError('subscription_url_invalid', '订阅地址必须是完整的 http(s) 链接', '示例：https://机场域名/路径?token=xxx');
       const clean = String(url).trim();
       const dup = this.remoteByUrl(clean);
       if (dup && dup.uid !== uid) throw new ApiError('subscription_duplicate', `该链接已被 ${dup.uid} 使用`, '若要复用请先删除原订阅');
-      fetched = await this.fetchImpl(clean); // 换链接必须先确认能抓到，否则不改任何文件
+      fetched = await this.fetchImpl(clean); // 换链接先确认抓得到，否则不改任何文件
       next = P.setField(next, uid, 'url', clean);
     }
     if (name !== undefined) next = P.setField(next, uid, 'name', name);
     if (updateInterval !== undefined) next = P.setNested(next, uid, 'option', 'update_interval', Number(updateInterval));
     if (autoUpdate !== undefined) next = P.setNested(next, uid, 'option', 'allow_auto_update', Boolean(autoUpdate));
-    if (next !== text) this.writeRegistry(next, { expect: url !== undefined ? { [uid]: url.trim() } : undefined });
+    if (next !== text) this.writeRegistry(next, { expect: url !== undefined ? { [uid]: String(url).trim() } : undefined });
 
+    const prev = this.meta()[uid];
     const meta = this.meta();
     meta[uid] = {
-      ...(meta[uid] || { uid, source: 'cvr', addedAt: new Date().toISOString() }),
+      ...(prev || { uid, source: 'cvr', addedAt: new Date().toISOString() }),
       managed: true,
-      name: name ?? meta[uid]?.name,
-      remark: remark ?? meta[uid]?.remark ?? '',
-      autoUpdate: autoUpdate ?? meta[uid]?.autoUpdate,
-      updateInterval: updateInterval ?? meta[uid]?.updateInterval,
+      name: name ?? prev?.name,
+      remark: remark ?? prev?.remark ?? '',
+      autoUpdate: autoUpdate ?? prev?.autoUpdate,
+      updateInterval: updateInterval ?? prev?.updateInterval,
       editedAt: new Date().toISOString(),
     };
     if (fetched) { meta[uid].nodes = fetched.nodes; meta[uid].userInfo = fetched.userInfo; }
@@ -3762,18 +3885,29 @@ class SubscriptionRepo {
     const item = this.mustFind(uid);
     if (!item.url) throw new ApiError('subscription_url_invalid', `订阅 ${uid} 没有 url 字段，无法更新`, '这是本地覆盖型 profile，不需要更新');
     const fetched = await (fetchImpl || this.fetchImpl)(item.url); // 抓取失败时后面的写入一行都不执行
-    const text = this.fs.readFileSync(this.registryPath, 'utf8');
-    let next = P.setNested(text, uid, 'extra', 'upload', fetched.userInfo ? fetched.userInfo.upload : 0);
-    next = P.setNested(next, uid, 'extra', 'download', fetched.userInfo ? fetched.userInfo.download : 0);
-    next = P.setNested(next, uid, 'extra', 'total', fetched.userInfo ? fetched.userInfo.total : 0);
-    next = P.setNested(next, uid, 'extra', 'expire', fetched.userInfo ? fetched.userInfo.expire || 0 : 0);
+
+    const text = this.registryText();
+    const meta = this.meta();
+    const ui = fetched.userInfo || {};
+    let next = P.setNested(text, uid, 'extra', 'upload', ui.upload ?? 0);
+    next = P.setNested(next, uid, 'extra', 'download', ui.download ?? 0);
+    next = P.setNested(next, uid, 'extra', 'total', ui.total ?? 0);
+    next = P.setNested(next, uid, 'extra', 'expire', ui.expire ?? 0);
     next = P.setField(next, uid, 'updated', this.now());
-    if (fetched.name) next = P.setField(next, uid, 'name', fetched.name);
+    // 只有 CVR 里本来就没名字时才用机场名补齐；用户改过的名字不能被每次更新冲掉
+    if (fetched.name && item.name === null && !(meta[uid] && meta[uid].name)) next = P.setField(next, uid, 'name', fetched.name);
     this.writeRegistry(next, { expect: { [uid]: item.url } });
     if (fetched.yaml) this.writeProfileFile(uid, fetched.yaml);
 
-    const meta = this.meta();
-    meta[uid] = { ...(meta[uid] || { uid, source: 'cvr' }), managed: true, lastUpdated: new Date().toISOString(), nodes: fetched.nodes, userInfo: fetched.userInfo, format: fetched.format };
+    meta[uid] = {
+      ...(meta[uid] || { uid, source: 'cvr' }),
+      managed: true,
+      name: (meta[uid] && meta[uid].name) ?? (item.name === null ? fetched.name : undefined),
+      lastUpdated: new Date().toISOString(),
+      nodes: fetched.nodes,
+      userInfo: fetched.userInfo,
+      format: fetched.format,
+    };
     this.saveMeta(meta);
     if (this.client && uid === this.current()) await this.client.reload({}).catch(() => {});
     return this.toEntry(this.mustFind(uid), this.current(), meta);
@@ -3784,15 +3918,19 @@ class SubscriptionRepo {
     const results = [];
     for (const e of entries) {
       if (e.autoUpdate === false) { results.push({ uid: e.uid, ok: false, kind: 'skipped', message: 'autoUpdate 已关闭' }); continue; }
-      try { const r = await this.update(e.uid, { fetchImpl }); results.push({ uid: e.uid, ok: true, nodes: r.nodes, userInfo: r.userInfo }); }
-      catch (err) { results.push({ uid: e.uid, ok: false, kind: err.kind || 'channel_unavailable', message: err.message }); }
+      try {
+        const r = await this.update(e.uid, { fetchImpl });
+        results.push({ uid: e.uid, ok: true, nodes: r.nodes, userInfo: r.userInfo });
+      } catch (err) {
+        results.push({ uid: e.uid, ok: false, kind: err.kind || 'channel_unavailable', message: err.message });
+      }
     }
     return { results };
   }
 
   async activate(uid) {
     this.mustFind(uid);
-    const next = P.setCurrent(this.fs.readFileSync(this.registryPath, 'utf8'), uid);
+    const next = P.setCurrent(this.registryText(), uid);
     this.writeRegistry(next);
     if (this.client) await this.client.reload({ proxyProviders: false });
     const groups = this.client ? (await this.client.getProxies()).groups : [];
@@ -3806,39 +3944,41 @@ class SubscriptionRepo {
     if (uid === this.current() && !force) {
       throw new ApiError('subscription_active_protected', `${uid} 是当前激活订阅，删除会让 mihomo 没有配置可用`, '先 activate 到别的订阅，或确认后再传 force: true');
     }
-    const next = P.removeItem(this.fs.readFileSync(this.registryPath, 'utf8'), uid);
-    this.writeRegistry(next);
-    const trashed = [];
+    const backups = this.writeRegistry(P.removeItem(this.registryText(), uid));
+    const trashed = backups.map((b) => path.basename(b.backupPath));
     const contentFile = path.join(this.profilesDir, item.file || `${uid}.yaml`);
     if (this.fs.existsSync(contentFile)) trashed.push(path.basename(store.moveToTrash(this.dirs, contentFile)));
     const meta = this.meta();
     delete meta[uid];
     this.saveMeta(meta);
     if (this.client) await this.client.reload({}).catch(() => {});
-    return { removed: uid, trashed, undo: `把 ${this.dirs.trash} 里对应文件放回 ${this.profilesDir} 并重新 add` };
+    return { removed: uid, trashed, undo: `注册表备份在 ${this.dirs.backups}，内容文件在 ${this.dirs.trash}；放回 ${this.profilesDir} 并重新 add 即可撤销` };
   }
 }
 
 module.exports = { SubscriptionRepo, newUid, UID_ALPHABET, REGISTRY };
 ```
 
-- [ ] **Step 6: 对齐 `writeRegistry` 的备份接口（不要留 TODO）**
+- [ ] **Step 6: 备份路径收敛（不留 TODO）与本轮落地的判断**
 
-Step 5 里 `this.cvr.backupSync([REGISTRY])` 这个同步备份方法在 Task 10 的 `CvrConfig` 上并不存在。两种收敛方式，选后者：
+Step 5 草稿里 `this.cvr.backupSync([REGISTRY])` 这个同步备份方法在 Task 10 的 `CvrConfig` 上并不存在，按预定选择第二种：
+订阅层自己用 `inlineBackup()`，只有一条备份代码路径，与 `verge.yaml` 的备份共用 `store.stamp()` 命名
+（`profiles.yaml.<stamp>.bak`），因此 `proxy_restore_config` 的 `^(?:verge|profiles|config)\.yaml\.[\d-]+\.bak$` 两边都能命中。
+`SubscriptionRepo` 因此不再接受 `cvr` 参数——它只用 `dirs.backups`。
 
-1. 给 `CvrConfig` 加 `backupSync` —— 会引入第二个备份实现，两处时间戳格式容易漂移。
-2. **`SubscriptionRepo` 自己用 `inlineBackup()`**（Step 5 已实现），即把 `writeRegistry` 首行改成：
+另外几处与草稿不同、且已被测试钉住的判断：
 
-```js
-  writeRegistry(nextText, { expect } = {}) {
-    const backupPath = this.inlineBackup(REGISTRY);
-    const backups = backupPath ? [{ name: REGISTRY, backupPath, ts: store.stamp() }] : [];
-```
-
-删掉 `this.cvr` 相关分支（`cvr` 参数保留给 `proxy_core_stop` 用，仓库本身不依赖它）。这样订阅层的备份只有一条代码路径，与 `verge.yaml` 的备份共用 `store.stamp()` 命名。
+1. **`store.stamp()` 带序号后缀**（`…毫秒-00N`）：同毫秒内的两次备份若同名，后一次会盖掉前一次，回滚拿到的就不是改动前的内容。Task 10 踩过同一个坑，这里复用同一个修法；并新增 `listBackupsIn(dir)` / `latestBackupIn(dir, name)` 供 `remove` 与还原工具共用。
+2. **删掉 `readProfiles()`**：它返回的 `{current: listItems(text), raw}` 没有调用方，`items()` / `current()` 已覆盖需求，留着只会误导后来人。
+3. **`mustFind` 的 hint 用 `uid(名字)`** 而不是 `uid(脱敏 url)`：用户认的是订阅名。`edit 不存在的 uid` 那条测试断言 hint 含 `测试订阅`。
+4. **`update` 不冲掉用户改过的订阅名**：只有 `profiles.yaml` 里本来就没有 name、且插件 meta 也没记过名字时，才用机场返回的名字补齐。订阅要支持自定义改名，每次刷新都覆名与这条需求冲突。
+5. **`remove` 的 `trashed` 返回两项**：注册表备份名 + 进 `.trash` 的内容文件名，删除后的提示要能对上号。
+6. **只改 `remark` 的 `edit` 不写 `profiles.yaml`**：备注是插件自己的字段，落在 `subscriptions.json`；CVR 拥有的文件一个字节都不动。
+7. **测试里的订阅地址用 fixture 的占位 host**（`panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER`）：草稿写的是真实链接，那样测试文件本身就成了凭据的副本。
+8. **先抓再写**：`add` / `edit url` 都在抓取成功后才动文件；抓取失败时注册表、内容文件、备份一个都不产生（`add 抓取失败时一个文件都不写` 钉这一点）。
 
 Run: `node --test test/subscriptions.test.js`
-Expected: PASS（13 个测试）。同时删掉 Step 5 里那个错误的 `readProfiles()` 方法 —— 它返回的形状（`{current: P.listItems(text), raw}`）没有调用方会用，`items()`/`current()` 已经覆盖需求，留着只会误导后来人。
+Expected: PASS（18 个测试；`test/store.test.js` 另 8 个）。
 
 - [ ] **Step 7: 全量测试与提交**
 
