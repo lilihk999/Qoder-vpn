@@ -12,6 +12,7 @@ const { ToolConfig } = require('./toolconfig');
 const { ApiError } = require('./envelope');
 const { redactText } = require('./redact');
 const store = require('./store');
+const { createAudit } = require('./audit');
 
 const LOG_FILE = 'mcp.log';
 const RUNTIME_TTL_MS = 2000;
@@ -33,7 +34,7 @@ function makeLogger(dirs) {
   return log;
 }
 
-function buildDeps(dirs, log) {
+function buildDeps(dirs, log, env = process.env) {
   let runtimeCache = null;
   let runtimeAt = 0;
 
@@ -70,6 +71,10 @@ function buildDeps(dirs, log) {
   const getToolConfig = async () =>
     new ToolConfig({ npmrcPath: path.join(os.homedir(), '.npmrc'), backupDir: dirs.backups });
 
+  // 账本进程级单例：createAudit 只读一次环境变量，开关在进程生命周期内不会变
+  let auditInstance = null;
+  const getAudit = () => (auditInstance || (auditInstance = createAudit({ dirs, env })));
+
   return {
     backupDir: dirs.backups,
     getRuntime,
@@ -77,6 +82,7 @@ function buildDeps(dirs, log) {
     getRepo,
     getCvr,
     getToolConfig,
+    getAudit,
     // 不注入 curlRunner：真探测必须真的走网络，否则 proxy_diagnose 的结论没有意义
     getDiagnoseDeps: () => ({}),
     log,

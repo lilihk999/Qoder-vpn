@@ -17,6 +17,7 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 | 机场换链接 / 轮换 token | `proxy_subscription_edit` |
 | 加第二个机场 | `proxy_subscription_add` + 需要时 `activate` |
 | 实验做完、`backups/` 里堆了带 token 的旧备份 | `proxy_restore_config prune=true`（先 `dryRun=true` 看一眼要删什么） |
+| "刚才那步到底做没做、报的什么错" | `proxy_status` 的 `audit` —— 最近 10 次调用的工具名/参数名/成败/kind/耗时 |
 
 ## 边界（不要越界）
 
@@ -26,6 +27,7 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 - 会话结束前若用了 `proxy_toolconfig apply`，提醒用户可 `action=revert` 还原；不要静默留着。
 - 订阅 URL **整条**是凭据：主机名、路径段、token 在工具输出里全部掩掉，只剩 `https://<masked-host>/<masked-path>?<masked-query>` 与 `urlFingerprint`。**不要**在回复里复述原始链接（包括你自己从 `profiles.yaml` 读到的原值）；要确认"是不是同一条链接"就比指纹。
 - `backups/` 里的 `profiles.yaml.*.bak` **是未脱敏的原始字节，含订阅 token**，且清理不会自动发生——每次动过配置的流程结束时跑一次 `prune`。
+- `logs/calls.jsonl` 是**只记参数名、不记参数值**的账本（值进磁盘就是永久残留）。所以它答得了"改 `verge.yaml` 那次成没成、报的哪个 kind"，答不了"当时传的是哪个 uid / 哪条链接"——后者要回会话里看自己的调用记录。关它是 `QODER_VPN_PROXY_AUDIT=0`（环境变量，重启生效），不是某个工具参数：被审计的那次调用不该有权决定要不要被记。
 
 ## 失败怎么读
 

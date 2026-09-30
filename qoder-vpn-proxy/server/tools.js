@@ -5,6 +5,7 @@ const { buildProxyEnv, inlinePrefix, GIT_PROXY_HOSTS } = require('./env');
 const { probeTcp } = require('./discovery');
 const { runDiagnose, DEFAULT_TARGETS } = require('./diagnose');
 const { pruneBackupsIn } = require('./store');
+const { argNames } = require('./audit');
 
 const MODES = ['rule', 'global', 'direct'];
 const SCOPES = ['session', 'global'];
@@ -118,6 +119,21 @@ function configDriftOf(cvr) {
   }
 }
 
+const AUDIT_PREVIEW = 10;
+
+/** 把账本回读并包成 proxy_status 的一块输出；没注入审计（未接线的 deps）就不编造字段。 */
+function auditOf(deps) {
+  if (typeof deps.getAudit !== 'function') return undefined;
+  let a;
+  try { a = deps.getAudit(); } catch { a = null; }
+  if (!a) return { enabled: false, note: '审计账本未初始化', lines: 0, recent: [] };
+  try {
+    return a.read(AUDIT_PREVIEW);
+  } catch (e) {
+    return { enabled: false, error: toEnvelope(e).kind, note: '账本读不到', lines: 0, recent: [] };
+  }
+}
+
 function groupOrThrow(groups, nodes, group) {
   const hit = groups.find((g) => g.name === group);
   if (!hit) throw new ApiError('malformed_config', `没有名为 ${redactText(String(group))} 的代理组`, `可选：${groups.map((g) => g.name).join(' / ')}`);
@@ -128,7 +144,7 @@ function buildTools(deps) {
   return [
     {
       name: 'proxy_status',
-      description: '查看本机代理现状：Clash Verge 是否在运行、控制通道走命名管道还是 TCP、mixed 端口、运行模式、当前节点与订阅余量、系统代理与 TUN 状态（只读展示，绝不改动），以及 configDrift —— 当前 verge.yaml/profiles.yaml 与插件最近一次时间戳备份的三态对照（dirty / clean / noBackup）。核心未运行时也返回成功，不可达原因在 data.core 里。',
+      description: '查看本机代理现状：Clash Verge 是否在运行、控制通道走命名管道还是 TCP、mixed 端口、运行模式、当前节点与订阅余量、系统代理与 TUN 状态（只读展示，绝不改动），configDrift —— 当前 verge.yaml/profiles.yaml 与插件最近一次时间戳备份的三态对照（dirty / clean / noBackup），以及 audit —— 本插件最近若干次 tools/call 的账本（只有时间、工具名、参数名、成败、kind、耗时，没有任何参数值）。核心未运行时也返回成功，不可达原因在 data.core 里。',
       inputSchema: obj(),
       handler: async () => {
         const rt = await deps.getRuntime();
@@ -169,6 +185,8 @@ function buildTools(deps) {
         } catch (e) {
           out.configDrift = { available: false, error: toEnvelope(e).kind, dirty: [], clean: [], noBackup: DRIFT_NAMES, note: 'CVR 配置层读不到，配置状态无法判断 —— 这不是"干净"。' };
         }
+        const audit = auditOf(deps);
+        if (audit) out.audit = audit;
         return ok(out);
       },
     },
@@ -481,14 +499,29 @@ const TOOL_NAMES = [
 ];
 
 async function callTool(name, args, deps) {
+  const startedAt = Date.now();
+  // 账本在出边界的那一刻写：成功、校验失败、未知工具、handler 抛异常四条路都要留痕，
+  // 而"未知工具"和"参数写错"恰恰是最需要被看见的两种（它们通常来自模型的一次猜测）。
+  const bookkeep = (okFlag, kind) => {
+    try {
+      const a = typeof deps.getAudit === 'function' ? deps.getAudit() : null;
+      if (a) a.record({ tool: String(name), argNames: argNames(args), ok: okFlag, kind, ms: Date.now() - startedAt });
+    } catch { /* 记账永远不该改变调用结果 */ }
+  };
   const tool = buildTools(deps).find((t) => t.name === name);
-  if (!tool) return fail('malformed_config', `未知工具 ${redactText(String(name))}`, `可用工具：${TOOL_NAMES.join(', ')}`);
+  if (!tool) {
+    bookkeep(false, 'malformed_config');
+    return fail('malformed_config', `未知工具 ${redactText(String(name))}`, `可用工具：${TOOL_NAMES.join(', ')}`);
+  }
   try {
     rejectExtra(args || {}, tool.inputSchema);
-    return await tool.handler(args || {});
+    const result = await tool.handler(args || {});
+    bookkeep(true, null);
+    return result;
   } catch (e) {
     // 错误消息来自更深的层，可能带着原始 url，所以出边界前再过一次脱敏
     const env = toEnvelope(e);
+    bookkeep(false, env.kind);
     return fail(env.kind, redactText(env.message), redactText(env.hint));
   }
 }

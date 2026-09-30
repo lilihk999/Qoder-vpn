@@ -396,3 +396,95 @@ test('proxy_restore_config 干净还原不制造多余警告', async () => {
   assert.deepEqual(r.data.driftAfterRestore.dirty, []);
   assert.deepEqual(r.data.warnings, [], '没问题就别说话，警告一多用户就不信警告了');
 });
+
+// ---- ④ tools/call 审计账本接线 ----
+// 订阅链接在这里是 mock 值，但断言的形状和真凭据一样：账本落盘是永久的，
+// 一旦哪次改动把 args 的值原样写进去，测试必须当场拦住而不是等验收时人工翻文件。
+const { createAudit } = require('../server/audit');
+const SECRET_URL = 'https://sub.example.invalid/Quir7aMockQwsxNcgv1234?token=abcdef0123456789abcdef0123456789';
+
+function auditDeps(label, over = {}) {
+  const dir = path.join(os.tmpdir(), `qvp-audit-wire-${label}-${process.pid}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: dir }));
+  const audit = createAudit({ dirs, env: {}, now: () => 'T' });
+  const f = fakeDeps({ getAudit: () => audit, ...over });
+  return { ...f, dir, audit, file: path.join(dirs.logs, 'calls.jsonl') };
+}
+
+test('callTool 成功一次就落一行：参数名进账本、值不进', async () => {
+  const { dir, file, deps } = auditDeps('ok');
+  const r = await callTool('proxy_subscription_add', { url: SECRET_URL, name: '南山云' }, deps);
+  assert.equal(r.ok, true);
+  const dump = fs.readFileSync(file, 'utf8');
+  assert.doesNotMatch(dump, /sub\.example\.invalid|Quir7aMock|abcdef0123456789|南山云/, '调用失败可以记，凭据不能记');
+  const line = JSON.parse(dump.trim());
+  assert.equal(line.tool, 'proxy_subscription_add');
+  assert.deepEqual(line.args, ['url', 'name']);
+  assert.equal(line.ok, true);
+  assert.equal(line.kind, null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('失败调用同样落账，kind 是排查的第一线索', async () => {
+  const { dir, file, deps } = auditDeps('fail', {
+    getClient: async () => { throw new ApiError('channel_unavailable', '控制通道连不上', '先 proxy_core_start'); },
+  });
+  const r = await callTool('proxy_nodes', { group: '节点选择' }, deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, 'channel_unavailable');
+  const line = JSON.parse(fs.readFileSync(file, 'utf8').trim());
+  assert.deepEqual(line, { ts: 'T', tool: 'proxy_nodes', args: ['group'], ok: false, kind: 'channel_unavailable', ms: line.ms });
+  assert.equal(typeof line.ms, 'number', '耗时是"这条命令为什么慢"的唯一证据');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('未知工具与参数校验失败也要落账（它们最需要被看见）', async () => {
+  const { dir, file, deps } = auditDeps('bad');
+  await callTool('proxy_nosuch', {}, deps);
+  await callTool('proxy_select', { mode: 'turbo' }, deps);
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines.map((l) => [l.tool, l.ok, l.kind]), [
+    ['proxy_nosuch', false, 'malformed_config'],
+    ['proxy_select', false, 'malformed_config'],
+  ]);
+  assert.deepEqual(lines[1].args, ['mode']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('没有 getAudit 时 callTool 照旧工作（账本是可选的，不是前置条件）', async () => {
+  const { deps } = fakeDeps();
+  assert.equal(deps.getAudit, undefined);
+  const r = await callTool('proxy_status', {}, deps);
+  assert.equal(r.ok, true);
+});
+
+test('proxy_status 回读账本：条数 + 最近若干次，不含任何参数值', async () => {
+  const { dir, deps, audit } = auditDeps('status');
+  await callTool('proxy_select', { group: '节点选择', target: 'HK 3 | v4' }, deps);
+  const r = await callTool('proxy_status', {}, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.data.audit.enabled, true);
+  // 本次 proxy_status 由 callTool 在 handler 返回后才落账，所以它读到的必然是"到此为止"的历史。
+  // 与其为了自我包含去写两遍（ok/kind 当时还不知道），不如把口径写进 note。
+  assert.equal(r.data.audit.lines, 1);
+  assert.deepEqual(r.data.audit.recent.map((e) => e.tool), ['proxy_select']);
+  assert.match(r.data.audit.note, /本次|不含/);
+  assert.doesNotMatch(JSON.stringify(r.data.audit), /HK 3|节点选择/, '账本回读也不该有值');
+  assert.equal(audit.read().lines, 2, 'proxy_status 自己也要留在账本里');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('账本关闭时 proxy_status 如实标 enabled:false，而不是假装没有日志', async () => {
+  const dir = path.join(os.tmpdir(), `qvp-audit-wire-off-${process.pid}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: dir }));
+  const audit = createAudit({ dirs, env: { QODER_VPN_PROXY_AUDIT: '0' } });
+  const { deps } = fakeDeps({ getAudit: () => audit });
+  const r = await callTool('proxy_status', {}, deps);
+  assert.equal(r.data.audit.enabled, false);
+  assert.match(r.data.audit.note, /QODER_VPN_PROXY_AUDIT/);
+  assert.equal(fs.existsSync(path.join(dirs.logs, 'calls.jsonl')), false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

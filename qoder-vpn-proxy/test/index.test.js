@@ -110,3 +110,45 @@ test('落盘日志这一行也先过脱敏：订阅链接不进 mcp.log', async 
   assert.match(text, /<masked-host>/, '抹过要留可见痕迹，否则只当日志坏了');
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('真进程每次 tools/call 都落账：参数名进 logs/calls.jsonl，参数值不进', async () => {
+  const { root, env } = sandboxEnv();
+  const dirs = store.dirs({ QODER_VPN_PROXY_DATA: path.join(root, 'data') });
+  const frames = [
+    FRAMES[0],
+    FRAMES[1],
+    '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"proxy_nodes","arguments":{"group":"南山云"}}}',
+    '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"proxy_status","arguments":{}}}',
+  ];
+  const { out } = await runServer(frames, env);
+
+  const file = path.join(dirs.logs, 'calls.jsonl');
+  assert.ok(fs.existsSync(file), '没有接上真 deps 的账本等于没有账本');
+  const dump = fs.readFileSync(file, 'utf8');
+  assert.doesNotMatch(dump, /南山云/, '组名是用户资产的一部分，不进永久磁盘');
+  const byTool = new Map(dump.split('\n').filter(Boolean).map((l) => { const e = JSON.parse(l); return [e.tool, e]; }));
+  // 两条并发处理，落账顺序不保证，所以按工具取而不是按下标取
+  assert.deepEqual([...byTool.keys()].sort(), ['proxy_nodes', 'proxy_status']);
+  assert.deepEqual(byTool.get('proxy_nodes').args, ['group']);
+  assert.equal(byTool.get('proxy_nodes').ok, false, '沙箱里没有 CVR，proxy_nodes 必然失败');
+  assert.equal(byTool.get('proxy_nodes').kind, 'not_installed');
+  assert.equal(typeof byTool.get('proxy_status').ms, 'number');
+
+  const status = JSON.parse(out.trim().split('\n').map((l) => JSON.parse(l)).find((m) => m.id === 4).result.content[0].text);
+  assert.equal(status.data.audit.enabled, true);
+  assert.ok(status.data.audit.lines >= 1);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('QODER_VPN_PROXY_AUDIT=0 时真进程一个字节都不写，但工具照常返回', async () => {
+  const { root, env } = sandboxEnv();
+  env.QODER_VPN_PROXY_AUDIT = '0';
+  const dirs = store.dirs({ QODER_VPN_PROXY_DATA: path.join(root, 'data') });
+  const { out } = await runServer([FRAMES[0], FRAMES[1], FRAMES[3]], env);
+  const status = JSON.parse(out.trim().split('\n').map((l) => JSON.parse(l)).find((m) => m.id === 3).result.content[0].text);
+  assert.equal(status.ok, true, '关账本不能把 proxy_status 一起关掉');
+  assert.equal(status.data.audit.enabled, false, '必须如实标关闭，而不是假装没有日志这回事');
+  assert.match(status.data.audit.note, /QODER_VPN_PROXY_AUDIT/);
+  assert.equal(fs.existsSync(path.join(dirs.logs, 'calls.jsonl')), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
