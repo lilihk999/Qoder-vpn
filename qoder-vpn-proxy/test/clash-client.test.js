@@ -26,11 +26,18 @@ test('version 与 getConfigs 映射字段名', async () => {
   c.close(); await fake.close();
 });
 
-test('setConfigs 发 PUT 且 fake 状态真变', async () => {
+test('setConfigs 用 PATCH，PUT 会被真机静默吞掉（v1.19.25 实测）', async () => {
   const { fake, client: c } = await client();
   await c.setConfigs({ mode: 'global' });
   assert.equal(fake.state.mode, 'global');
-  assert.ok(fake.hits.includes('PUT /configs'));
+  assert.ok(fake.hits.includes('PATCH /configs'), `hits=${fake.hits.join(',')}`);
+  c.close(); await fake.close();
+});
+
+test('PUT /configs 在真机上回 204 但不改状态', async () => {
+  const { fake, client: c } = await client();
+  await c.request('PUT', '/configs', { body: { mode: 'global' }, expectEmpty: true });
+  assert.equal((await c.getConfigs()).mode, 'rule', 'PUT 成功返回却没生效，正是真机行为');
   c.close(); await fake.close();
 });
 

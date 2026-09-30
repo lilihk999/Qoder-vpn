@@ -69,7 +69,8 @@ class ClashClient {
     if (patch.mixedPort !== undefined) body['mixed-port'] = patch.mixedPort;
     if (patch.proxies !== undefined) body.proxies = patch.proxies;
     if (patch['external-controller'] !== undefined) body['external-controller'] = patch['external-controller'];
-    await this.request('PUT', '/configs', { body, expectEmpty: true });
+    // 真机 v1.19.25：PUT /configs 也回 204，但只有 PATCH 会真的改 mode/tun。
+    await this.request('PATCH', '/configs', { body, expectEmpty: true });
     return body;
   }
 
