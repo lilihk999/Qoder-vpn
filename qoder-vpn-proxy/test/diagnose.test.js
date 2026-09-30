@@ -31,11 +31,33 @@ test('parseCurlOut 解 4 元组', () => {
   assert.equal(D.parseCurlOut('乱码').status, null);
 });
 
+test('parseCurlOut 保住失败时的耗时：真机 curl 在连接失败时不输出 remote_ip', () => {
+  // 真机 curl 8.17.0 失败时 -w 打的是 "000 0.000000 4.004966 "（第 4 字段为空）
+  assert.deepEqual(D.parseCurlOut('000 0.000000 4.004966 '), { status: 0, connectMs: 0, totalMs: 4005, remoteIp: null });
+  assert.deepEqual(D.parseCurlOut('000 0.000000 8.001000'), { status: 0, connectMs: 0, totalMs: 8001, remoteIp: null });
+});
+
+test('summarize：失败行也带耗时，结论能说清是超时还是拒连', async () => {
+  const rows = await D.runDiagnose({
+    proxyUrl: PX,
+    targets: [{ label: 'GitHub', url: 'https://github.com', expectDirect: false }],
+    curlRunner: runner({
+      'direct:https://github.com': { code: 28, out: '000 0.000000 8.001000', err: 'curl: (28) Connection timed out' },
+      'proxy:https://github.com': { code: 0, out: '200 0.081 1.234 20.205.243.166' },
+    }),
+  });
+  const r = rows.rows[0];
+  assert.equal(r.direct.ok, false);
+  assert.equal(r.direct.totalMs, 8001, '直连超时的 8 秒必须留在证据里');
+  assert.equal(r.direct.remoteIp, null);
+  assert.match(r.conclusion, /需要代理/);
+});
+
 const runner = (table) => async (args) => {
   const url = args[args.length - 1];
   const proxied = args.includes('--proxy');
   const hit = table[`${proxied ? 'proxy' : 'direct'}:${url}`];
-  if (!hit) return { code: 7, stdout: '000 0.000 8.001 0.0.0.0', stderr: `curl: (7) failed for ${url}` };
+  if (!hit) return { code: 7, stdout: '000 0.000000 8.001000', stderr: `curl: (7) failed for ${url}` };
   return { code: hit.code ?? 0, stdout: hit.out, stderr: hit.err || '' };
 };
 
@@ -47,7 +69,7 @@ test('summarize：github 直连超时、经代理 200 -> 判定需要代理', as
       { label: 'Qoder', url: 'https://qoder.com', expectDirect: true },
     ],
     curlRunner: runner({
-      'direct:https://github.com': { code: 28, out: '000 0.000 8.001 0.0.0.0', err: 'Connection timed out' },
+      'direct:https://github.com': { code: 28, out: '000 0.000000 8.001000', err: 'Connection timed out' },
       'proxy:https://github.com': { out: '200 0.090 0.880 20.205.243.166' },
       'direct:https://qoder.com': { out: '200 0.300 0.520 1.2.3.4' },
       'proxy:https://qoder.com': { out: '200 1.800 3.720 5.6.7.8' },
@@ -71,8 +93,8 @@ test('summarize：代理也不通 -> 指向 proxy_test / core_start', async () =
     proxyUrl: PX,
     targets: [{ label: 'GitHub', url: 'https://github.com', expectDirect: false }],
     curlRunner: runner({
-      'direct:https://github.com': { code: 28, out: '000 0.000 8.001 0.0.0.0' },
-      'proxy:https://github.com': { code: 7, out: '000 0.000 8.001 0.0.0.0', err: 'Connection refused' },
+      'direct:https://github.com': { code: 28, out: '000 0.000000 8.001000' },
+      'proxy:https://github.com': { code: 7, out: '000 0.000000 8.001000', err: 'Connection refused' },
     }),
     timeoutMs: 8000,
   });
@@ -85,7 +107,7 @@ test('代理端口未监听时跳过经代理轮，不产生误导性的"代理�
     proxyUrl: PX,
     portAlive: false,
     targets: [{ label: 'GitHub', url: 'https://github.com', expectDirect: false }],
-    curlRunner: runner({ 'direct:https://github.com': { code: 28, out: '000 0.000 8.001 0.0.0.0' } }),
+    curlRunner: runner({ 'direct:https://github.com': { code: 28, out: '000 0.000000 8.001000' } }),
     timeoutMs: 8000,
   });
   assert.equal(rows.rows[0].proxied, 'skipped');

@@ -30,13 +30,14 @@ function curlArgs({ url, proxy, timeoutMs = 8000 }) {
 }
 
 function parseCurlOut(stdout) {
-  const m = /^(\d{3})\s+([\d.]+)\s+([\d.]+)\s+(\S+)$/.exec(String(stdout || '').trim());
+  // 连接失败时真机 curl 的 %{remote_ip} 是空串，第 4 段必须可选，否则整行解析失败、耗时一起丢掉
+  const m = /^(\d{3})\s+([\d.]+)\s+([\d.]+)(?:\s+(\S+))?$/.exec(String(stdout || '').trim());
   if (!m) return { status: null, connectMs: null, totalMs: null, remoteIp: null };
   return {
     status: Number(m[1]) === 0 ? 0 : Number(m[1]),
     connectMs: Math.round(Number(m[2]) * 1000),
     totalMs: Math.round(Number(m[3]) * 1000),
-    remoteIp: m[4],
+    remoteIp: m[4] ?? null,
   };
 }
 
