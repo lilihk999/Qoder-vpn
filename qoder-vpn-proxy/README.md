@@ -27,7 +27,7 @@
 | `proxy_status` | 现状一页纸：是否安装/在跑、通道（管道还是 TCP）、mixed 端口、模式、当前节点、订阅余量、系统代理与 TUN 开关（只读展示）。核心没跑也回 `ok:true`，不可达原因在 `data.core` |
 | `proxy_detect` | 解析出的端口 + 常见端口逐个 TCP 握手，列出哪些真能连 |
 | `proxy_core_start` | 启动 CVR。`scope=session`（默认）先备份 `verge.yaml` 再压制系统代理与 proxy guard；`scope=global` 保留用户自己的设置。需要开外部控制时传 `enableExternalControl=true`（**先征得用户同意**） |
-| `proxy_core_stop` | 结束 `clash-verge.exe` / `verge-mihomo.exe`；`restore:true`（默认）只把 `verge.yaml` 的系统代理压制还原回去，**不会**撤销你已经切换/新增的订阅 |
+| `proxy_core_stop` | 结束 `clash-verge.exe` / `verge-mihomo.exe`，**等进程确实退出后**才动手还原（否则 CVR 拆除中会重新打开系统代理）；`restore:true`（默认）只把 `verge.yaml` 的系统代理压制还原回去，**不会**撤销你已经切换/新增的订阅；返回 `stillRunning` 与只读复查的 `systemProxyEnabled` |
 | `proxy_nodes` | 列策略组与组内**节点名**，含当前选中项 |
 | `proxy_select` | 切节点或切模式（`rule` / `global` / `direct`），切完回读确认生效 |
 | `proxy_test` | 对节点跑真实 `/delay` 测速，串行执行，按延迟升序返回，坏节点标 `ok:false` 与原因 |
