@@ -1,7 +1,7 @@
 'use strict';
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { redactUrl, redactText } = require('./redact');
+const { redactText } = require('./redact');
 
 const execFileAsync = promisify(execFile);
 
@@ -45,16 +45,29 @@ async function probe({ url, proxy, curlRunner, timeoutMs }) {
   const args = curlArgs({ url, proxy, timeoutMs });
   let r;
   try { r = await curlRunner(args); }
-  catch (e) { return { ok: false, ...parseCurlOut(''), error: redactText(`curl 无法执行: ${e.code || e.message}`) }; }
+  catch (e) { return { ok: false, truncated: false, ...parseCurlOut(''), error: redactText(`curl 无法执行: ${e.code || e.message}`) }; }
   const parsed = parseCurlOut(r.stdout);
-  const ok = r.code === 0 && parsed.status >= 200 && parsed.status < 400;
+  // curl 28 = 计时到点。若这时 %{http_code} 已经是 2xx/3xx，说明连接、TLS、请求、响应头
+  // 全部成功，只是响应体没收完 —— "能不能通"已经被回答，算成失败会让 proxy_diagnose
+  // 把一条健康的通道判成"代理本身不通"，并把用户支去换节点（真机踩过）。
+  const reached = parsed.status !== null && parsed.status >= 200 && parsed.status < 400;
+  const truncated = reached && r.code === 28;
+  const ok = reached && (r.code === 0 || truncated);
   return {
     ok,
+    truncated,
     ...parsed,
     error: ok ? null : redactText(parsed.status === null
       ? `curl exit ${r.code}: ${(r.stderr || '').slice(0, 140)}`
       : `HTTP ${parsed.status}${r.code ? ` (curl exit ${r.code})` : ''}`),
   };
+}
+
+function truncSuffix(row) {
+  const side = [];
+  if (row.direct && row.direct.truncated) side.push('直连');
+  if (row.proxied && row.proxied.truncated) side.push('经代理');
+  return side.length ? `（${side.join('与')}在 max-time 触顶截断，响应体未收完）` : '';
 }
 
 function rowConclusion(row) {
@@ -63,12 +76,12 @@ function rowConclusion(row) {
     if (!direct.ok) return row.expectDirect ? '直连失败且代理未运行' : '直连失败（该域名通常需要代理），但代理未运行';
     return '直连正常，代理未运行';
   }
-  if (!direct.ok && proxied.ok) return '需要代理：直连不通，经代理正常';
+  if (!direct.ok && proxied.ok) return `需要代理：直连不通，经代理正常${truncSuffix(row)}`;
   if (direct.ok && proxied.ok) {
     if (proxied.totalMs != null && direct.totalMs != null && proxied.totalMs > direct.totalMs * 1.5) {
       return `直连更快（${direct.totalMs}ms vs 经代理 ${proxied.totalMs}ms），此项不该走代理`;
     }
-    return '两种路径都通';
+    return `两种路径都通${truncSuffix(row)}`;
   }
   if (direct.ok && !proxied.ok) return '经代理反而失败：该节点或规则可能有问题';
   return '直连与代理均失败';
@@ -80,6 +93,8 @@ function summarize(rows) {
   const allProxiedDead = rows.length > 0 && rows.every((r) => r.proxied !== 'skipped' && !r.proxied.ok);
   const skippedAll = rows.length > 0 && rows.every((r) => r.proxied === 'skipped');
   const fasterDirect = rows.filter((r) => /直连更快/.test(r.conclusion));
+  const truncated = rows.filter((r) => (r.direct && r.direct.truncated)
+    || (r.proxied && r.proxied !== 'skipped' && r.proxied.truncated));
 
   let verdict;
   if (skippedAll) verdict = '代理未运行，只完成直连探测';
@@ -89,6 +104,9 @@ function summarize(rows) {
 
   if (skippedAll) advice.push('先 proxy_core_start（scope 默认 session，不会影响其他应用），再重跑 proxy_diagnose');
   if (allProxiedDead) advice.push('代理端口在监听但出不了网：先 proxy_test 看节点延迟，再 proxy_select 换组内其他节点');
+  if (truncated.length) {
+    advice.push(`${truncated.map((r) => r.label).join('、')} 拿到 2xx/3xx 但 curl exit 28：这是 --max-time 到点、响应体未收完，不是通道故障。要区分"慢"与"不通"，把 timeoutMs 调大（如 proxy_diagnose timeoutMs=20000）再跑一次，别去换节点`);
+  }
   if (needsProxy.length) {
     advice.push(`需要代理的目标：${needsProxy.map((r) => r.label).join('、')}`);
     advice.push('单次命令：内联 HTTP_PROXY/HTTPS_PROXY 前缀（proxy_env target=shell 给出）；长期：proxy_toolconfig action=apply');
@@ -99,7 +117,7 @@ function summarize(rows) {
   if (rows.some((r) => r.expectDirect && r.proxied !== 'skipped' && !r.proxied.ok && r.direct.ok)) {
     advice.push('有预期可直连的目标经代理后失败，说明出口 IP 被对方站拒绝（常见于 pypi/npm 的国内镜像策略）');
   }
-  return { verdict, advice };
+  return { verdict, advice, truncatedCount: truncated.length };
 }
 
 async function runDiagnose({
@@ -120,21 +138,26 @@ async function runDiagnose({
 
   const rows = [];
   for (const t of targets) {
-    const safeUrl = redactUrl(t.url);
+    // 用 redactText 而不是"只红 token"：targets 是用户自己传的，贴订阅链接进来完全合理，
+    // 这一面若只红 token 就等于给用户一条"把凭据原样打印回来"的通道；
+    // 形状不像订阅的公共地址逐字保留，否则这张表就没法读了。
+    const safeUrl = redactText(t.url);
     const direct = await probe({ url: t.url, proxy: null, curlRunner: runner, timeoutMs });
     const proxied = portAlive ? await probe({ url: t.url, proxy: proxyUrl, curlRunner: runner, timeoutMs }) : 'skipped';
     const row = { label: t.label, url: safeUrl, expectDirect: Boolean(t.expectDirect), direct, proxied };
     row.conclusion = rowConclusion(row);
     rows.push(row);
   }
-  const { verdict, advice } = summarize(rows);
+  const { verdict, advice, truncatedCount } = summarize(rows);
   return {
     proxyUrl: proxyUrl || null,
     proxyPortAlive: portAlive,
+    timeoutMs,
     rows,
     verdict,
     advice,
-    note: 'curl 的 --noproxy/--proxy 决定了每一轮是否真的绕过环境变量；本表两列均在同一时刻各跑一次，网络抖动可能让单行结论不稳，重要结论请重复一次',
+    truncatedCount,
+    note: 'curl 的 --noproxy/--proxy 决定了每一轮是否真的绕过环境变量；本表两列均在同一时刻各跑一次，网络抖动可能让单行结论不稳，重要结论请重复一次。exit 28 且已拿到 2xx/3xx 的行算"通但被 max-time 截断"，加大 timeoutMs 再判',
   };
 }
 

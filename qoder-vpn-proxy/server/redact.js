@@ -76,11 +76,6 @@ function maskHosts(text, url) {
   return scrubbed.replace(TOKEN_KV, '$1<redacted>');
 }
 
-function redactUrl(url) {
-  if (typeof url !== 'string') return '';
-  return url.replace(TOKEN_KV, '$1<redacted>');
-}
-
 function redactText(value) {
   if (value === undefined || value === null) return '';
   const s = typeof value === 'string' ? value : String(value);
@@ -94,4 +89,4 @@ function redactText(value) {
     .replace(TOKEN_KV, '$1<redacted>');
 }
 
-module.exports = { redactUrl, redactText, maskSubscriptionUrl, maskHosts, urlFingerprint };
+module.exports = { redactText, maskSubscriptionUrl, maskHosts, urlFingerprint };
