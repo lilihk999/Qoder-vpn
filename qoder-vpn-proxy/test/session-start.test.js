@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const HOOK = path.join(__dirname, '..', 'server', 'session-start.js');
+const LAUNCHER = path.join(__dirname, '..', 'hooks', 'run-hook.cmd');
 
 /** 沙箱里造一个"装了 CVR 且 runtime 端口写在 config.yaml"的配置目录 */
 function sandbox({ mixedPort }) {
@@ -84,7 +85,7 @@ test('端口可连通才提示，给出内联前缀与工具名而不是凭记�
     assert.ok(ctx.length > 0, '端口在听，应该给出提示');
     assert.match(ctx, new RegExp(`127\\.0\\.0\\.1:${port}`), '端口来自探测结果');
     assert.match(ctx, /HTTP_PROXY=http:\/\/127\.0\.0\.1:/);
-    assert.match(ctx, /mcp__vpn-proxy__proxy_diagnose/);
+    assert.match(ctx, /mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose/, '工具全名要能直接被模型调用');
     assert.doesNotMatch(ctx, /7897/, '不能出现写死的默认端口');
   } finally {
     await stop();
@@ -97,4 +98,13 @@ test('装了 CVR 但代理端口没在听时不提示（避免让用户照着前
   const { env } = sandbox({ mixedPort: port });
   const { out } = await runHook(env);
   assert.equal(JSON.parse(out).hookSpecificOutput.additionalContext, '');
+});
+
+test('run-hook.cmd 必须纯 ASCII：cmd.exe 按 GBK 码页读批处理，中文注释会让它错行到 exit 255', async () => {
+  const buf = fs.readFileSync(LAUNCHER);
+  const bad = [];
+  for (let i = 0; i < buf.length; i += 1) {
+    if (buf[i] > 0x7f) bad.push({ i, byte: buf[i], line: buf.subarray(0, i).toString('latin1').split('\n').length });
+  }
+  assert.deepEqual(bad.slice(0, 3), [], `发现 ${bad.length} 个非 ASCII 字节，首个在第 ${bad[0] && bad[0].line} 行`);
 });

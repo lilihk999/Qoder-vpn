@@ -6124,7 +6124,7 @@ Expected: `# tests 144`（Task 14 收尾时 125，本任务净增 19：protocol 
 
 **Interfaces:**
 - Consumes: `server/index.js`（MCP 入口）、`server/session-start.js`（hook 入口）
-- Produces: 一个被 Qoder 加载的插件，工具名前缀 `mcp__vpn-proxy__*`
+- Produces: 一个被 Qoder 加载的插件，工具名前缀实测为 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__*`（不是最初预测的 `mcp__vpn-proxy__*`；名字里带了 source 与插件名两段，给模型看的文案必须照 `mcp_list` 的输出抄）
 
 - [x] **Step 1: 写 `.qoder-plugin/plugin.json`**
 
@@ -6163,7 +6163,7 @@ Run: `node -e "JSON.parse(require('fs').readFileSync('.qoder-plugin/plugin.json'
 }
 ```
 
-Expected: 17 个工具出现在 `mcp_list` 结果里，前缀 `mcp__vpn-proxy__`。
+Expected: 17 个工具出现在 `mcp_list` 结果里；实测前缀是 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__`（初稿写的 `mcp__vpn-proxy__` 是猜的，Qoder 会把插件 source 和插件名两段都拼进工具名）。
 
 若 Qoder 不解析 `${QODER_NODE_RUNTIME}`（服务起不来、工具列表为空），把 `command` 改成 `"node"` 再验证一次；本机 Node v22.23.3 在 PATH 上。两种写法的实际生效情况记进 `docs/superpowers/probes/03-plugin-install.md`。
 
@@ -6190,7 +6190,7 @@ async function main() {
     const ctx = [
       `本机 Clash Verge 代理端口 127.0.0.1:${rt.ports.mixed} 当前可连通（插件 qoder-vpn-proxy 检测）。`,
       `直连失败时，联网命令请加前缀：${inlinePrefix(env)}`,
-      `npm/git 想长期走代理用 mcp__vpn-proxy__proxy_toolconfig(action=apply)；哪些域名真需要代理用 mcp__vpn-proxy__proxy_diagnose 判定。`,
+      `npm/git 想长期走代理用 mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_toolconfig(action=apply)；哪些域名真需要代理用 mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose 判定。`,
       `注意：系统代理未开启，本提示只影响命令行工具；Qoder 自身请求建议保持直连。`,
     ].join(' ');
     return emit(ctx);
@@ -6220,6 +6220,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const HOOK = path.join(__dirname, '..', 'server', 'session-start.js');
+const LAUNCHER = path.join(__dirname, '..', 'hooks', 'run-hook.cmd');
 
 /** 沙箱里造一个"装了 CVR 且 runtime 端口写在 config.yaml"的配置目录 */
 function sandbox({ mixedPort }) {
@@ -6296,7 +6297,7 @@ test('端口可连通才提示，给出内联前缀与工具名而不是凭记�
     assert.ok(ctx.length > 0, '端口在听，应该给出提示');
     assert.match(ctx, new RegExp(`127\\.0\\.0\\.1:${port}`), '端口来自探测结果');
     assert.match(ctx, /HTTP_PROXY=http:\/\/127\.0\.0\.1:/);
-    assert.match(ctx, /mcp__vpn-proxy__proxy_diagnose/);
+    assert.match(ctx, /mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose/, '工具全名要能直接被模型调用');
     assert.doesNotMatch(ctx, /7897/, '不能出现写死的默认端口');
   } finally {
     await stop();
@@ -6310,21 +6311,36 @@ test('装了 CVR 但代理端口没在听时不提示（避免让用户照着前
   const { out } = await runHook(env);
   assert.equal(JSON.parse(out).hookSpecificOutput.additionalContext, '');
 });
+
+test('run-hook.cmd 必须纯 ASCII：cmd.exe 按 GBK 码页读批处理，中文注释会让它错行到 exit 255', async () => {
+  const buf = fs.readFileSync(LAUNCHER);
+  const bad = [];
+  for (let i = 0; i < buf.length; i += 1) {
+    if (buf[i] > 0x7f) bad.push({ i, byte: buf[i], line: buf.subarray(0, i).toString('latin1').split('\n').length });
+  }
+  assert.deepEqual(bad.slice(0, 3), [], `发现 ${bad.length} 个非 ASCII 字节，首个在第 ${bad[0] && bad[0].line} 行`);
+});
 ```
 
 Run: `node --test test/session-start.test.js`
-Expected: PASS（3 个测试）。第二条会真的起一个监听端口再让 hook 去探 —— hook 的价值就在"只在能连时说话"，用假返回值测它等于没测。
+Expected: PASS（初稿 3 个测试；真机出缺陷 6 之后加了第四条"launcher 纯 ASCII"，现在 4 个）。第二条会真的起一个监听端口再让 hook 去探 —— hook 的价值就在"只在能连时说话"，用假返回值测它等于没测。第四条守的是上一条段落里那个把整个 hook 打崩的坑。
 
 - [x] **Step 4: 写 hook 包装（cmd/bash 双语种 + `hooks.json`）**
 
-`hooks/run-hook.cmd`（沿用已验证的 superpowers 双语种写法：首行 `: << 'CMDBLOCK'` 让 bash 把批处理段当 heredoc 吞掉，cmd.exe 则顺序执行到 `exit /b` 就停）：
+`hooks/run-hook.cmd`（沿用已验证的 superpowers 双语种写法：首行 `: << 'CMDBLOCK'` 让 bash 把批处理段当 heredoc 吞掉，cmd.exe 则顺序执行到 `exit /b` 就停。**批处理段只能写 ASCII**，理由见下面那段事故记录）：
 
 ```bat
 : << 'CMDBLOCK'
 @echo off
-REM 双语种 wrapper：Windows 下 cmd.exe 跑批处理段（找到 bash 再跑同名脚本），
-REM Unix 下 : 是 no-op，直接落到文件末尾的 bash 段。
-REM 用法：run-hook.cmd <脚本名> [参数...]
+REM Cross-platform polyglot wrapper for hook scripts.
+REM On Windows: cmd.exe runs the batch portion, which finds bash and delegates.
+REM On Unix: the shell reads this as a script (: is a no-op in bash).
+REM
+REM KEEP THIS FILE PURE ASCII. cmd.exe reads the batch portion under the OEM
+REM codepage (GBK on this machine); multi-byte UTF-8 comments desynchronize its
+REM line parser and the hook dies with exit 255 before node ever runs.
+REM
+REM Usage: run-hook.cmd <script-name> [args...]
 
 if "%~1"=="" (
     echo run-hook.cmd: missing script name >&2
@@ -6348,7 +6364,8 @@ if %ERRORLEVEL% equ 0 (
     exit /b %ERRORLEVEL%
 )
 
-REM 找不到 bash 就静默退出：插件的 MCP 工具照用，只是本次会话没有开场提示
+REM No bash found - exit silently rather than error
+REM (plugin still works, just without SessionStart context injection)
 exit /b 0
 CMDBLOCK
 
@@ -6359,6 +6376,8 @@ exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"
 ```
 
 草稿这一段写的是 `node "%~dp0\..\server\index.js" %* >nul 2>&1` —— **照抄会把 MCP 服务端当 hook 跑**：`index.js` 起来等 stdin、往 stdout 吐 JSON-RPC，hook 却在等一个 `hookSpecificOutput` 对象；`>nul` 还会把它冲掉，表现是"插件装了但开场提示永远不出现"，而且每次会话多挂一个空转的 node 进程，直到 5 秒超时被杀。落地按 superpowers 6.3.0 里已在跑的 wrapper 来：cmd 段只负责**找到 bash**（Git for Windows 标准路径 → PATH 上的 bash），然后调用同目录下与参数同名的 hook 脚本；三条都没命中时 `exit /b 0` 静默放行（没有 bash 的机器上 MCP 工具照常可用，只是没有开场提示）。
+
+**这段 wrapper 的注释最初是中文写的，真机上把整个 hook 弄崩了（缺陷 6）**。cmd.exe 按当前 **OEM 码页**（本机 GBK/936）读批处理文件，UTF-8 中文注释被当成双字节序列切分，行首字节偏移从此错位，后面每一行都从中间开始解析 —— Qoder 日志里表现为 `hook.finished success=false exit_code=255`，stderr 是"文件名、目录名或卷标语法不正确"，`node server/session-start.js` 从未被执行。同一次启动里 superpowers 那份**命令串完全相同**的 launcher 却 exit 0，逐字节对比后唯一差异就是注释语言。把 Qoder 的调用形态抄成一个最小脚本（`bash -c '"<root>\hooks/run-hook.cmd" session-start'`）就能稳定复现，不必依赖真重启。修复后新增一条测试守住它：`test/session-start.test.js` 断言 launcher **零个非 ASCII 字节**。结论写进文件头注释里了 —— 解释性中文要放就放 bash 段或 README，批处理段只能是 ASCII。
 
 另外在仓库根加 `.gitattributes`（`* text eol=lf`）。本机 `core.autocrlf=true`，没有这一行 checkout 出来的 hook 脚本就是 CRLF：`<< 'CMDBLOCK'` 的结束标记带上 `\r` 便匹配不上，整个文件被当 heredoc 吞掉，bash 段一行都不执行 —— 表现只是"开场提示没出现"，没有任何报错可看。已装好的 superpowers 6.3.0 那份 `run-hook.cmd` 实测是纯 LF（0 个 CRLF / 46 个 LF），说明这就是 Qoder 在 Windows 上跑这份 wrapper 的行尾。同理 LF 也是 `test/fixtures/cvr-*.yaml` 与备份一致性校验的前提，那些地方是逐字节比较。
 
@@ -6480,7 +6499,7 @@ node -e "const r=require(process.env.HOME+'/.qoder/plugins/installed_plugins_v2.
 node -e "const s=require(process.env.USERPROFILE+'/.qoder/settings.json');console.log('enabled:',s.enabledPlugins['qoder-vpn-proxy@local'])"
 ```
 
-Expected: 三行都打回 true。若 Qoder 重启后拒绝加载（工具列表里没有出现 `mcp__vpn-proxy__*`），把 registry 条目键换成已验证过的 source 形态再试一次；仍不行则**回退到 Step 8**，不要反复改 Qoder 的配置。
+Expected: 三行都打回 true。若 Qoder 重启后拒绝加载（工具列表里没有出现 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__*`），把 registry 条目键换成已验证过的 source 形态再试一次；仍不行则**回退到 Step 8**，不要反复改 Qoder 的配置。
 
 - [ ] **Step 8: 回退路径 —— 只注册 MCP server**
 
@@ -6633,10 +6652,10 @@ Expected: 三项都干净。
 
 这一步只能由用户做（重启会中断当前会话）。请用户重启后确认两件事：
 
-1. **验收 4**：新开对话里 17 个 `mcp__vpn-proxy__*` 工具可见；在 Clash Verge 关闭的状态下调用 `proxy_nodes` / `proxy_test`，返回 `core_not_running` + 修复提示而不是崩或超时挂起。
-2. **验收 9**：CVR 未运行时，新会话开头**看不到**任何代理相关的 `additionalContext`（本会话最开头那段 "Workspace search routing" 是别注入的，代理提示应该完全没有）；启动 CVR 后的新会话才应出现"本机代理端口可连通"这段提示。
+1. **验收 4**：新开对话里 17 个工具可见（**实测前缀 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__`**）；在 Clash Verge 关闭的状态下调用 `proxy_nodes` / `proxy_test`，返回 `core_not_running`/`channel_unavailable` + 修复提示而不是崩或超时挂起。**实测结果：达成**，但同时暴露缺陷 5（`installed:false`）与缺陷 7（文案工具名错）。
+2. **验收 9**：CVR 未运行时，新会话开头**看不到**任何代理相关的 `additionalContext`（本会话最开头那段 "Workspace search routing" 是别的插件注入的，代理提示应该完全没有）；启动 CVR 后的新会话才应出现"本机代理端口可连通"这段提示。**实测结果：现象符合但当时不构成证据** —— 日志显示 hook 被 Qoder 调用了却 `exit_code=255`（缺陷 6：中文注释崩掉 cmd.exe 批处理解析），`node` 从未执行，所以"没注入"既可能是判断正确也可能是进程根本没跑起来。修复后必须重跑一次才算。
 
-把用户反馈逐字记进验收文档。若 hook 没生效，按 probe 文档 `02-hooks.md` 的结论排查顺序：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 5 秒内是否退出。
+把用户反馈逐字记进验收文档。若 hook 没生效，按 probe 文档 `02-hooks.md` 的结论排查顺序：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 5 秒内是否退出。**再加两条本轮学到的**：先看 `~/.qoder/logs/latest/qodercli.log` 里的 `hook.started` / `hook.finished`（能区分"没调用"和"调用即崩"，`stderr` 也在同一条日志里）；以及 launcher 必须是纯 ASCII。
 
 - [x] **Step 10: 写验收文档并提交**
 
