@@ -24,7 +24,7 @@
 
 | 工具 | 作用 |
 |---|---|
-| `proxy_status` | 现状一页纸：是否安装/在跑、通道（管道还是 TCP）、mixed 端口、模式、当前节点、订阅余量、系统代理与 TUN 开关（只读展示）。核心没跑也回 `ok:true`，不可达原因在 `data.core` |
+| `proxy_status` | 现状一页纸：是否安装/在跑、通道（管道还是 TCP）、mixed 端口、模式、当前节点、订阅余量、系统代理与 TUN 开关（只读展示），另有 `configDrift` = 当前 `verge.yaml`/`profiles.yaml` 与插件最近一次备份的三态对照（`dirty` / `clean` / `noBackup`；它只说"字节不同"，看不出是插件改的、CVR 自己回写的还是用户手改的）。核心没跑也回 `ok:true`，不可达原因在 `data.core` 里 |
 | `proxy_detect` | 解析出的端口 + 常见端口逐个 TCP 握手，列出哪些真能连 |
 | `proxy_core_start` | 启动 CVR。`scope=session`（默认）先备份 `verge.yaml` 再压制系统代理与 proxy guard；`scope=global` 保留用户自己的设置。需要开外部控制时传 `enableExternalControl=true`（**先征得用户同意**） |
 | `proxy_core_stop` | 结束 `clash-verge.exe` / `verge-mihomo.exe`，**等进程确实退出后**才动手还原（否则 CVR 拆除中会重新打开系统代理）；`restore:true`（默认）只把 `verge.yaml` 的系统代理压制还原回去，**不会**撤销你已经切换/新增的订阅；返回 `stillRunning` 与只读复查的 `systemProxyEnabled` |
@@ -40,7 +40,7 @@
 | `proxy_subscription_activate` | 切换激活订阅：写 `profiles.yaml` 的 `current` 并回读确认。mihomo v1.19.25 **没有** reload 端点，所以返回里 `needsRestart: true` 表示还要 `proxy_core_stop` + `proxy_core_start`（或在 GUI 点一下该订阅）才真正加载新节点 |
 | `proxy_subscription_remove` | 删除订阅：移除注册项，内容文件移入插件回收目录 `.trash`（可撤销，不硬删） |
 | `proxy_diagnose` | 对 GitHub / npm / PyPI / Qoder 等地址，同一时刻各跑一轮"直连"与"经代理"的 curl（直连轮强制 `--noproxy '*'`，不被环境变量污染），给出该不该走代理的结论 |
-| `proxy_restore_config` | 列出插件做过的全部带时间戳备份并还原；`prune=true` 改为按保留期清理备份目录 |
+| `proxy_restore_config` | 列出插件做过的全部带时间戳备份并还原；还原后立刻复查一遍 drift（`driftAfterRestore`），若刚还原又报脏在 `warnings` 里点名"CVR 正在运行时写回去"这一种解释。`prune=true` 改为按保留期清理备份目录 |
 
 ## `scope=session` 与 `scope=global`
 

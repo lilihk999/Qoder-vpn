@@ -34,3 +34,5 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 - `profile_registry_desync` → Clash Verge 运行中会回写 `profiles.yaml`。先 `proxy_core_stop` 再重试订阅操作。
 - `proxy_subscription_activate` 返回 `needsRestart: true` → 注册表已经改对，但 mihomo（v1.19.25 起）没有 reload 端点，新节点还没进内存。要么 `proxy_core_stop` + `proxy_core_start`，要么让用户在 GUI 里点一下该订阅，别重复调用 activate。
 - `subscription_format_unexpected` → 机场按 UA 分流，或链接已失效；不是插件的 bug。
+- `proxy_diagnose` 里 `HTTP 2xx` 且 `curl exit 28` 的行算**通但被 max-time 截断**（`truncated: true`），不是通道故障。别据此建议换节点——按 `advice` 把 `timeoutMs` 调大（如 20000）重跑一次再判"慢"还是"不通"。
+- `proxy_status` 的 `configDrift.dirty` 只说明**当前字节与插件最近一次备份不同**，看不出是谁改的：插件改的、CVR 运行时自己回写的（`profiles.yaml` 的元数据经常这样）、用户手改的都算进来。`noBackup` 是"没得比"，不等于"没问题"；`available:false` 才是读不到。刚 `proxy_restore_config` 完就再次报脏，通常是核心还在跑（还原输出里的 `warnings` 会点名这一种）。

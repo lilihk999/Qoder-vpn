@@ -64,7 +64,7 @@ function fakeDeps(over = {}) {
   };
   // start 的返回值必须含 backups：真 CvrConfig.start 一定返回它，漏了就会让
   // proxy_core_start 的 r.backups.map 只在测试里炸（Task 13 假 git runner 的同款错误）。
-  const cvr = { start: async (o) => { calls.push(['start', o]); return { scope: o.scope, systemProxySuppressed: o.scope === 'session', channel: { kind: 'pipe', ports: RUNTIME.ports }, ports: RUNTIME.ports, waitedMs: 1200, backups: [{ name: 'verge.yaml', ts: '20260930-1', backupPath: '/tmp/b', skipped: false }, { name: 'profiles.yaml', ts: '20260930-1', skipped: true }] }; }, stop: async (o) => ({ killed: ['clash-verge.exe'], restored: o.restore }), listBackups: () => [{ name: 'verge.yaml', ts: '20260930-1', backupPath: '/tmp/b' }], modifiedSinceBackup: () => ({ modified: [] }), restore: async () => ({ restored: [{ name: 'verge.yaml', backupPath: '/tmp/b' }] }), suppressSystemProxy: async () => ({ changed: [] }), setExternalController: async (v) => ({ changed: v ? [{ key: 'enable_external_controller', before: 'false', after: 'true' }] : [] }) };
+  const cvr = { start: async (o) => { calls.push(['start', o]); return { scope: o.scope, systemProxySuppressed: o.scope === 'session', channel: { kind: 'pipe', ports: RUNTIME.ports }, ports: RUNTIME.ports, waitedMs: 1200, backups: [{ name: 'verge.yaml', ts: '20260930-1', backupPath: '/tmp/b', skipped: false }, { name: 'profiles.yaml', ts: '20260930-1', skipped: true }] }; }, stop: async (o) => ({ killed: ['clash-verge.exe'], restored: o.restore }), listBackups: () => [{ name: 'verge.yaml', ts: '20260930-1', backupPath: '/tmp/b' }], modifiedSinceBackup: () => ({ modified: [], clean: ['verge.yaml', 'profiles.yaml'], noBackup: [] }), restore: async () => ({ restored: [{ name: 'verge.yaml', backupPath: '/tmp/b' }] }), suppressSystemProxy: async () => ({ changed: [] }), setExternalController: async (v) => ({ changed: v ? [{ key: 'enable_external_controller', before: 'false', after: 'true' }] : [] }) };
   const toolConfig = { apply: async (a) => { calls.push(['tc-apply', a]); return { npm: { action: 'written' }, git: { applied: [{ key: 'http.https://github.com/.proxy', value: a.proxyUrl }] } }; }, revert: async () => ({ npm: { action: 'stripped' }, git: { removed: [] } }), status: async () => ({ verdict: 'clean', npmrc: { exists: true, managed: false, proxyLines: [] }, git: { managed: [], mismatch: false, otherHttpKeys: [] } }) };
 
   const deps = {
@@ -337,4 +337,62 @@ test('prune 与还原互斥，keepPerName 必须是正数', async () => {
   const bad = await callTool('proxy_restore_config', { prune: true, keepPerName: 0 }, deps);
   assert.equal(bad.ok, false);
   assert.match(bad.message, /keepPerName/);
+});
+
+test('proxy_status 的 configDrift 说清在跟什么比、比不出什么', async () => {
+  const { deps } = fakeDeps();
+  const s = await callTool('proxy_status', {}, deps);
+  assert.equal(s.ok, true);
+  assert.equal(s.data.configModified, undefined, '旧字段只给一串文件名，读起来像"插件改过配置"，已换成 configDrift');
+  const d = s.data.configDrift;
+  assert.equal(d.available, true);
+  assert.match(d.comparedTo, /最近一次.*备份/, '必须写明对照基准，否则 dirty 会被读成"相对基线变了"');
+  assert.deepEqual(d.dirty, []);
+  assert.deepEqual(d.clean, ['verge.yaml', 'profiles.yaml']);
+  assert.match(d.note, /看不出是谁改的|CVR 自己/);
+});
+
+test('configDrift：CVR 层读不到时报"无法判断"，不伪装成干净', async () => {
+  const { deps } = fakeDeps({
+    getCvr: async () => ({
+      listBackups: () => { throw new ApiError('config_write_failed', '备份目录不可读', ''); },
+      modifiedSinceBackup: () => { throw new ApiError('config_write_failed', '备份目录不可读', ''); },
+    }),
+  });
+  const s = await callTool('proxy_status', {}, deps);
+  assert.equal(s.ok, true, 'proxy_status 是只读体检，一个子项坏了不该整体失败');
+  const d = s.data.configDrift;
+  assert.equal(d.available, false);
+  assert.equal(d.error, 'config_write_failed', '以前 catch 完返回 []，与"确实干净"完全无法区分');
+  assert.match(d.note, /无法判断/);
+});
+
+test('proxy_restore_config 还原后立刻复查 drift，把"CVR 又写回去了"说破', async () => {
+  const still = { modified: [{ name: 'verge.yaml', backupTs: 't2', backupPath: '/tmp/b2' }], clean: [], noBackup: [] };
+  const { deps } = fakeDeps({
+    getCvr: async () => ({
+      listBackups: () => [{ name: 'verge.yaml', ts: 't2', backupPath: '/tmp/b2' }],
+      restore: async () => ({ restored: [{ name: 'verge.yaml', ts: 't2', backupPath: '/tmp/b2' }] }),
+      // 还原前报脏、还原后再查仍脏 —— 真机上就是 CVR 运行中把文件写回去了
+      modifiedSinceBackup: () => still,
+    }),
+  });
+  const r = await callTool('proxy_restore_config', {}, deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.data.driftAfterRestore.dirty, ['verge.yaml']);
+  assert.ok(r.data.warnings.some((w) => /CVR 正在运行|正在运行时把它写回/.test(w)),
+    `还原成功却又报脏时必须有解释，用户读到的否则是"还原没用"：${JSON.stringify(r.data.warnings)}`);
+});
+
+test('proxy_restore_config 干净还原不制造多余警告', async () => {
+  const { deps } = fakeDeps({
+    getCvr: async () => ({
+      listBackups: () => [{ name: 'verge.yaml', ts: 't2', backupPath: '/tmp/b2' }],
+      restore: async () => ({ restored: [{ name: 'verge.yaml', ts: 't2', backupPath: '/tmp/b2' }] }),
+      modifiedSinceBackup: () => ({ modified: [], clean: ['verge.yaml'], noBackup: [] }),
+    }),
+  });
+  const r = await callTool('proxy_restore_config', {}, deps);
+  assert.deepEqual(r.data.driftAfterRestore.dirty, []);
+  assert.deepEqual(r.data.warnings, [], '没问题就别说话，警告一多用户就不信警告了');
 });

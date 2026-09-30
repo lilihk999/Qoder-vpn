@@ -305,16 +305,23 @@ class CvrConfig {
 
   modifiedSinceBackup(names = DEFAULT_BACKUP_NAMES) {
     const modified = [];
+    const clean = [];
+    const noBackup = [];
     for (const name of names) {
       const b = this.latestBackupFor(name);
-      if (!b) continue;
+      // 没有插件备份时"当前内容 == 基线"这句话根本无从判断。以前直接 continue，
+      // 于是 proxy_status 报出来的一片干净 —— 那是"没得比"伪装成"没问题"。
+      if (!b) { noBackup.push(name); continue; }
       let cur, old;
       try { cur = this.fs.existsSync(this.file(name)) ? this.fs.readFileSync(this.file(name), 'utf8') : null; } catch { cur = null; }
-      try { old = this.fs.readFileSync(b.backupPath, 'utf8'); } catch { continue; }
+      try { old = this.fs.readFileSync(b.backupPath, 'utf8'); } catch { noBackup.push(name); continue; }
       // 只在"当前内容 != 备份内容"时报告改过：还原之后备份仍在，但已不该报脏
-      if (cur !== null && cur !== old) modified.push({ name, backupTs: b.ts });
+      // 文件整个不见了是最严重的一种偏离，不能算"没得比"：建议的是还原，不是 diff
+      if (cur === null) modified.push({ name, backupTs: b.ts, backupPath: b.backupPath, missing: true });
+      else if (cur !== old) modified.push({ name, backupTs: b.ts, backupPath: b.backupPath });
+      else clean.push(name);
     }
-    return { modified };
+    return { modified, clean, noBackup };
   }
 }
 
