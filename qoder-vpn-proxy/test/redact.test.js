@@ -1,11 +1,13 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { redactText, redactUrl, maskSubscriptionUrl, urlFingerprint } = require('../server/redact');
+const { redactText, maskSubscriptionUrl, urlFingerprint } = require('../server/redact');
 
-test('redactUrl 抹掉 token 但保留域名与路径', () => {
-  const out = redactUrl('https://sub.example.invalid/SUBPATH?token=0123456789abcdef0123456789abcdef');
-  assert.equal(out, 'https://sub.example.invalid/SUBPATH?token=<redacted>');
+test('带 token 的链接不再有一条"只红 token"的退路', () => {
+  // redactUrl（只掩 token、留域名与路径）曾在 diagnose 与订阅层用着；契约升级后它
+  // 是纯粹的危险面 —— 留着就一定有人拿去输出订阅地址，所以删掉而不是留着"备用"。
+  assert.equal(require('../server/redact').redactUrl, undefined);
+  assert.doesNotMatch(redactText('https://sub.example.invalid/SUBPATH?token=abc'), /sub\.example\.invalid/);
 });
 
 test('redactText 抹掉 token 型 query', () => {
