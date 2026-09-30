@@ -1,0 +1,6 @@
+# 本机 core.autocrlf=true，不加这行 checkout 出来就是 CRLF，而三处会被它咬到：
+# - hooks/run-hook.cmd 与 hooks/session-start：`<< 'CMDBLOCK'` 的结束标记带上 \r 就匹配不上，
+#   整个文件被当 heredoc 吞掉，hook 静默不输出（表现为"插件装了但开场提示永远不出现"）。
+#   已装好的 superpowers 6.3.0 那份 run-hook.cmd 实测就是纯 LF（0 个 CRLF / 46 个 LF）。
+# - test/fixtures/cvr-*.yaml：profilesYaml 的 round-trip 恒等与备份一致性校验都按逐字节比。
+* text eol=lf
