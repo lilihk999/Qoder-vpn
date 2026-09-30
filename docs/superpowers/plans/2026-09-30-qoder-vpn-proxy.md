@@ -2109,6 +2109,7 @@ git commit -m "feat: clash-client mihomo REST 语义层(切换后回读确认/�
     - `async start({scope = 'session', timeoutMs = 25000, enableExternalControl = false}) -> {scope, systemProxySuppressed, externalControlEnabled, channel, ports, waitedMs}`
     - `async stop({restore = true}) -> {killed, restored}`
     - `async restore(names?) -> {restored: [{name, backupPath}]}`
+    - `async restoreFrom(list) -> {restored}`（按显式备份记录还原，`start()` 失败回滚走这条；`restore()` 是它的薄封装）
     - `modifiedSinceBackup(names?) -> {modified: [{name, backupTs}]}`（**同步**方法；逐字节比对当前文件与最近一次备份。spec §3.5 要求 `proxy_status` 显示"当前配置是否被插件改过"，而"存在备份"在还原之后仍为真，所以不能拿 `listBackups().length` 顶替）
   - 常量 `SUPPRESS_KEYS = ['enable_system_proxy', 'enable_proxy_guard']`
 
@@ -2136,6 +2137,8 @@ const VERGE = [
   '',
 ].join('\n');
 
+const EXE = 'clash-verge.exe';
+
 function mkSandbox(t) {
   const dir = path.join(__dirname, `sandbox-task10-${t}`);
   fs.rmSync(dir, { recursive: true, force: true });
@@ -2143,8 +2146,12 @@ function mkSandbox(t) {
   fs.mkdirSync(path.join(dir, 'backups'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'config', 'verge.yaml'), VERGE);
   fs.writeFileSync(path.join(dir, 'config', 'profiles.yaml'), '# Profiles\n\ncurrent: A\nitems:\n- uid: A\n  type: remote\n');
+  // start() 会先确认 exe 存在再 spawn，所以沙箱必须给它一个存在的可执行文件路径
+  fs.writeFileSync(path.join(dir, EXE), 'placeholder');
   return dir;
 }
+const exe = (dir) => path.join(dir, EXE);
+const stdioOf = (o) => [].concat(o.stdio).join(',');
 
 test('patchScalar 只改目标行，其余字节不动', () => {
   const r = C.patchScalar(VERGE, 'enable_system_proxy', false);
@@ -2181,13 +2188,13 @@ test('backup 后 suppress 再 restore：逐字节一致', async () => {
   const dir = mkSandbox('restore');
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: path.join(dir, 'clash-verge.exe'), fsImpl: fs,
+    exePath: exe(dir), fsImpl: fs,
   });
   const before = fs.readFileSync(path.join(dir, 'config', 'verge.yaml'), 'utf8');
   const profBefore = fs.readFileSync(path.join(dir, 'config', 'profiles.yaml'), 'utf8');
   const made = await cvr.backup();
   assert.deepEqual(made.map((m) => m.name).sort(), ['profiles.yaml', 'verge.yaml']);
-  const changed = await cvr.suppressSystemProxy();
+  const { changed } = await cvr.suppressSystemProxy();
   assert.deepEqual(changed.map((c) => c.key).sort(), ['enable_proxy_guard', 'enable_system_proxy']);
   assert.notEqual(fs.readFileSync(path.join(dir, 'config', 'verge.yaml'), 'utf8'), before);
   const restored = await cvr.restore();
@@ -2199,13 +2206,10 @@ test('backup 后 suppress 再 restore：逐字节一致', async () => {
 
 test('备份失败则不写入（spec §4：不进半改状态）', async () => {
   const dir = mkSandbox('backupfail');
-  fs.rmSync(path.join(dir, 'backups'), { recursive: true, force: true });
-  fs.chmodSync(path.join(dir, 'config'), 0o444); // 只留 backup 会失败，写 verge.yaml 仍可能成功，所以用抛错的 fsImpl
   const boomFs = { ...fs, copyFileSync: () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); } };
-  const cvr = new C.CvrConfig({ configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'), fsImpl: boomFs });
+  const cvr = new C.CvrConfig({ configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: boomFs });
   await assert.rejects(cvr.suppressSystemProxy(), (e) => e.kind === 'config_write_failed');
   assert.equal(fs.readFileSync(path.join(dir, 'config', 'verge.yaml'), 'utf8'), VERGE, '原文件未被动过');
-  fs.chmodSync(path.join(dir, 'config'), 0o666);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2214,15 +2218,16 @@ test('start 走 session scope：先备份再压制，等通道就绪', async () 
   const calls = [];
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: path.join(dir, 'clash-verge.exe'), fsImpl: fs,
-    spawn: (cmd, args, opts) => { calls.push(['spawn', cmd, opts.detached, opts.stdio.join(',')]); return { unref() { calls.push(['unref']); } }; },
+    exePath: exe(dir), fsImpl: fs,
+    spawn: (cmd, args, opts) => { calls.push(['spawn', cmd, opts.detached, stdioOf(opts)]); return { unref() { calls.push(['unref']); } }; },
     waitForChannel: async () => ({ kind: 'pipe', ports: { mixed: 7897 } }),
   });
   const r = await cvr.start({ scope: 'session' });
   assert.equal(r.scope, 'session');
   assert.equal(r.systemProxySuppressed, true);
   assert.equal(r.channel.kind, 'pipe');
-  assert.deepEqual(calls[0], ['spawn', path.join(dir, 'clash-verge.exe'), true, 'ignore']);
+  assert.deepEqual(calls[0], ['spawn', exe(dir), true, 'ignore']);
+  assert.ok(calls.includes('unref') || calls.some((c) => c[0] === 'unref'), '分离进程必须 unref，否则插件退出会卡在子进程上');
   assert.match(fs.readFileSync(path.join(dir, 'config', 'verge.yaml'), 'utf8'), /^enable_system_proxy: false$/m);
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -2231,7 +2236,7 @@ test('start 走 global scope 时不碰系统代理', async () => {
   const dir = mkSandbox('global');
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: 'x.exe', fsImpl: fs, spawn: () => ({ unref() {} }),
+    exePath: exe(dir), fsImpl: fs, spawn: () => ({ unref() {} }),
     waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
   });
   const r = await cvr.start({ scope: 'global' });
@@ -2245,7 +2250,7 @@ test('enableExternalControl=true 时必须在 spawn 之前改 verge.yaml', async
   const seq = [];
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: 'x.exe', fsImpl: fs,
+    exePath: exe(dir), fsImpl: fs,
     spawn: () => { seq.push('spawn'); return { unref() {} }; },
     waitForChannel: async () => { seq.push('wait'); return { kind: 'tcp', ports: { mixed: 7897 } }; },
   });
@@ -2260,7 +2265,7 @@ test('默认不传 enableExternalControl 时绝不碰该键（未确认就不改
   const dir = mkSandbox('extctl-off');
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: 'x.exe', fsImpl: fs, spawn: () => ({ unref() {} }),
+    exePath: exe(dir), fsImpl: fs, spawn: () => ({ unref() {} }),
     waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
   });
   const r = await cvr.start({ scope: 'session' });
@@ -2273,7 +2278,7 @@ test('scope=global + enableExternalControl 超时也要回滚（只看 suppresse
   const dir = mkSandbox('extctl-rollback');
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: 'x.exe', fsImpl: fs, spawn: () => ({ unref() {} }),
+    exePath: exe(dir), fsImpl: fs, spawn: () => ({ unref() {} }),
     waitForChannel: async () => { throw new C.ApiError('channel_unavailable', '不可达'); },
   });
   await assert.rejects(cvr.start({ scope: 'global', enableExternalControl: true }));
@@ -2286,7 +2291,7 @@ test('start 超时未就绪 -> core_not_running，且已写入的压制项被还
   const dir = mkSandbox('timeout');
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: 'x.exe', fsImpl: fs, spawn: () => ({ unref() {} }),
+    exePath: exe(dir), fsImpl: fs, spawn: () => ({ unref() {} }),
     waitForChannel: async () => { throw new C.ApiError('channel_unavailable', '不可达'); },
   });
   await assert.rejects(cvr.start({ scope: 'session' }), (e) => e.kind === 'channel_unavailable' || e.kind === 'core_not_running');
@@ -2294,11 +2299,41 @@ test('start 超时未就绪 -> core_not_running，且已写入的压制项被还
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('exePath 不存在时立刻 not_installed，而不是白等 25 秒超时', async () => {
+  const dir = mkSandbox('noexe');
+  let spawned = 0;
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
+    exePath: path.join(dir, 'missing.exe'), fsImpl: fs,
+    spawn: () => { spawned += 1; return { unref() {} }; },
+    waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  await assert.rejects(cvr.start({ scope: 'session' }), (e) => e.kind === 'not_installed');
+  assert.equal(spawned, 0, '没确认过可执行文件就不该 spawn');
+  assert.match(fs.readFileSync(path.join(dir, 'config', 'verge.yaml'), 'utf8'), /^enable_system_proxy: true$/m, 'not_installed 同样要回滚压制');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('session + enableExternalControl 双双失败时，两个键都回到调用前的值', async () => {
+  const dir = mkSandbox('both-rollback');
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
+    exePath: exe(dir), fsImpl: fs, spawn: () => ({ unref() {} }),
+    waitForChannel: async () => { throw new C.ApiError('channel_unavailable', '不可达'); },
+  });
+  await assert.rejects(cvr.start({ scope: 'session', enableExternalControl: true }));
+  const text = fs.readFileSync(path.join(dir, 'config', 'verge.yaml'), 'utf8');
+  assert.match(text, /^enable_system_proxy: true$/m, '压制已撤销');
+  assert.match(text, /^enable_external_controller: false$/m, '外部控制开关也回滚');
+  assert.equal(text, VERGE, '两个键都改过时，还原必须回到 start 入口时的整份内容');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('modifiedSinceBackup：改过报脏，还原后即便备份仍在也不报脏', async () => {
   const dir = mkSandbox('modified');
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: 'x.exe', fsImpl: fs,
+    exePath: exe(dir), fsImpl: fs,
   });
   assert.deepEqual(cvr.modifiedSinceBackup().modified, [], '没备份过 -> 无从判断，报干净');
   await cvr.backup();
@@ -2317,7 +2352,7 @@ test('stop：taskkill 两个镜像，restore=true 时还原备份', async () => 
   const cmds = [];
   const cvr = new C.CvrConfig({
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
-    exePath: 'x.exe', fsImpl: fs,
+    exePath: exe(dir), fsImpl: fs,
     execFile: (cmd, args) => { cmds.push(`${cmd} ${args.join(' ')}`); return Promise.resolve({ stdout: '' }); },
   });
   await cvr.backup(['verge.yaml']);
@@ -2330,6 +2365,7 @@ test('stop：taskkill 两个镜像，restore=true 时还原备份', async () => 
   assert.equal(r2.restored, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -2345,46 +2381,42 @@ Expected: FAIL，`Cannot find module '../server/cvr-config'`
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFile, spawn } = require('node:child_process');
+const { spawn: childSpawn, execFile: childExecFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { ApiError } = require('./envelope');
-const { discover, createTransport, FALLBACK_PIPE } = (() => {
-  const d = require('./discovery');
-  const t = require('./transport');
-  return { discover: d.discover, createTransport: t.createTransport, FALLBACK_PIPE: d.FALLBACK_PIPE };
-})();
+const { discover: defaultDiscover, FALLBACK_PIPE } = require('./discovery');
+const { createTransport } = require('./transport');
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(childExecFile);
 const SUPPRESS_KEYS = ['enable_system_proxy', 'enable_proxy_guard'];
 const DEFAULT_BACKUP_NAMES = ['verge.yaml', 'profiles.yaml'];
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 /**
- * 只替换列 0 的 `key: value`。必须用 `(?<![\w-])` 语义（这里用显式正则前缀）避免
- * `my_enable_system_proxy:` 这类同名后缀被误改。
+ * 只替换列 0 的 `key: value`。正则按 `^key:` 锚定，所以 `my_enable_system_proxy:`
+ * 这类同后缀的键不会被误改。保留原行尾风格；键缺失时在末尾追加。
  */
 function patchScalar(text, key, value) {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(/\r?\n/);
   const re = new RegExp(`^${escapeRe(key)}:([ \\t]*)(.*)$`);
-  const next = `${key}: ${value}`;
   const idx = lines.findIndex((l) => re.test(l));
   if (idx === -1) {
-    const trailing = lines[lines.length - 1] === '' ? [] : [''];
-    return { text: [...lines, ...trailing, next, ''].filter((l, i) => !(i === lines.length && trailing.length === 0 && l === '')).join(eol), changed: true, before: null, after: String(value) };
+    const body = text === '' || text.endsWith('\n') ? text : text + eol;
+    return { text: `${body}${key}: ${value}${eol}`, changed: true, before: null, after: String(value) };
   }
   const before = re.exec(lines[idx])[2].trim();
   if (before === String(value)) return { text, changed: false, before, after: String(value) };
-  lines[idx] = next;
+  lines[idx] = `${key}: ${value}`;
   return { text: lines.join(eol), changed: true, before, after: String(value) };
 }
 
-async function defaultWaitForChannel({ timeoutMs, pollMs = 700 }) {
+async function defaultWaitForChannel({ timeoutMs, pollMs = 700, discoverImpl = defaultDiscover } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastErr = null;
   while (Date.now() < deadline) {
-    const runtime = await discover();
+    const runtime = await discoverImpl();
     const candidate = {
       ...runtime,
       controller: { pipe: runtime.controller.pipe || FALLBACK_PIPE, tcp: runtime.controller.tcp },
@@ -2405,17 +2437,25 @@ async function defaultWaitForChannel({ timeoutMs, pollMs = 700 }) {
 }
 
 class CvrConfig {
-  constructor({ configDir, backupDir, exePath, fsImpl = fs, spawnImpl = spawn, execFileImpl = execFileAsync, discoverImpl = discover, waitForChannel = defaultWaitForChannel } = {}) {
+  constructor({
+    configDir, backupDir, exePath,
+    fsImpl = fs,
+    spawn = childSpawn,
+    execFile = execFileAsync,
+    discover = defaultDiscover,
+    waitForChannel,
+  } = {}) {
     if (!configDir) throw new ApiError('not_installed', '未找到 Clash Verge 配置目录', '先运行 proxy_detect 确认安装位置');
     if (!backupDir) throw new ApiError('config_write_failed', '调用 cvr-config 必须提供 backupDir（由 store 层给出）', '');
     this.configDir = configDir;
     this.backupDir = backupDir;
     this.exePath = exePath;
     this.fs = fsImpl;
-    this.spawn = spawnImpl;
-    this.execFile = execFileImpl;
-    this.discoverImpl = discoverImpl;
-    this.waitForChannel = waitForChannel;
+    this.spawn = spawn;
+    this.execFile = execFile;
+    this.backupSeq = 0;
+    this.waitForChannel = waitForChannel
+      || ((opts) => defaultWaitForChannel({ ...opts, discoverImpl: discover }));
   }
 
   file(name) { return path.join(this.configDir, name); }
@@ -2427,7 +2467,9 @@ class CvrConfig {
   }
 
   async backup(names = DEFAULT_BACKUP_NAMES) {
-    const ts = this.stamp();
+    // 毫秒不够：start() 里 patchVerge 会再次 backup，同毫秒会写到同一个文件名，
+    // 把入口备份覆盖成中途状态，回滚就等于没回滚。序号补在时间戳末尾。
+    const ts = `${this.stamp()}-${String(this.backupSeq += 1).padStart(3, '0')}`;
     try { this.fs.mkdirSync(this.backupDir, { recursive: true }); }
     catch (e) { throw new ApiError('config_write_failed', `无法创建备份目录 ${this.backupDir}: ${e.code || e.message}`, '磁盘或权限问题，插件不会在未备份的情况下改动配置'); }
 
@@ -2438,10 +2480,12 @@ class CvrConfig {
       const dest = path.join(this.backupDir, `${name}.${ts}.bak`);
       try {
         this.fs.copyFileSync(src, dest);
-        this.fs.writeFileSync(dest, this.fs.readFileSync(src)); // 二次确认落盘可读
+        if (!this.fs.existsSync(dest) || this.fs.readFileSync(dest, 'utf8') !== this.fs.readFileSync(src, 'utf8')) {
+          throw new ApiError('config_write_failed', `备份 ${name} 落盘后校验不一致`, '中止写入，配置未发生改动');
+        }
         made.push({ name, backupPath: dest, ts, skipped: false });
       } catch (e) {
-        throw new ApiError('config_write_failed', `备份 ${name} 失败: ${e.code || e.message}`, '中止写入，配置未发生改动');
+        throw e instanceof ApiError ? e : new ApiError('config_write_failed', `备份 ${name} 失败: ${e.code || e.message}`, '中止写入，配置未发生改动');
       }
     }
     return made;
@@ -2450,7 +2494,8 @@ class CvrConfig {
   listBackups() {
     if (!this.fs.existsSync(this.backupDir)) return [];
     return this.fs.readdirSync(this.backupDir)
-      .filter((f) => /\.(?:verge|profiles|config)\.yaml\.[\d-]+\.bak$/.test(f))
+      // readdirSync 给的是裸文件名，所以这里必须从行首匹配 `verge.yaml.<ts>.bak`
+      .filter((f) => /^(?:verge|profiles|config)\.yaml\.[\d-]+\.bak$/.test(f))
       .map((f) => {
         const m = /^(.*)\.([\d-]+)\.bak$/.exec(f);
         return { name: m[1], ts: m[2], backupPath: path.join(this.backupDir, f) };
@@ -2488,8 +2533,7 @@ class CvrConfig {
       if (r.changed) changed.push({ key, before: r.before, after: r.after });
       text = r.text;
     }
-    if (!changed.length) return { changed, backups };
-    this.writeText(name, text, backups);
+    if (changed.length) this.writeText(name, text, backups);
     return { changed, backups };
   }
 
@@ -2507,32 +2551,43 @@ class CvrConfig {
     if (scope !== 'session' && scope !== 'global') {
       throw new ApiError('config_write_failed', `未知 scope: ${scope}`, '只支持 "session" 或 "global"');
     }
-    const backups = await this.backup(DEFAULT_BACKUP_NAMES);
-    let suppressed = false;
-    let externalControl = false;
-    if (scope === 'session') {
-      await this.suppressSystemProxy();
-      suppressed = true;
-    }
-    // 必须在 spawn 之前改：CVR 只在启动时读 verge.yaml，进程起来之后再改就无效了
-    if (enableExternalControl) {
-      const r = await this.setExternalController(true);
-      externalControl = r.changed.length > 0;
-    }
+    // 先确认再动手：exe 不存在时如果等到 waitForChannel 超时才报，用户要白等 25 秒
     if (!this.exePath || !this.fs.existsSync(this.exePath)) {
       throw new ApiError('not_installed', `找不到可执行文件 ${this.exePath}`, '用 proxy_detect 确认安装目录，或设置 QVP_INSTALL_DIR');
     }
-    const child = this.spawn(this.exePath, [], { detached: true, stdio: 'ignore', windowsHide: true });
-    if (child && typeof child.unref === 'function') child.unref();
-
+    const backups = await this.backup(DEFAULT_BACKUP_NAMES);
+    let suppressed = false;
+    let externalControl = false;
     try {
+      if (scope === 'session') {
+        await this.suppressSystemProxy();
+        suppressed = true;
+      }
+      // 必须在 spawn 之前改：CVR 只在启动时读 verge.yaml，进程起来之后再改就无效了
+      if (enableExternalControl) {
+        const r = await this.setExternalController(true);
+        externalControl = r.changed.length > 0;
+      }
+      const child = this.spawn(this.exePath, [], { detached: true, stdio: 'ignore', windowsHide: true });
+      if (child && typeof child.unref === 'function') child.unref();
+
       const waited = Date.now();
       const channel = await this.waitForChannel({ timeoutMs });
-      return { scope, systemProxySuppressed: suppressed, externalControlEnabled: externalControl, channel, ports: channel.ports, waitedMs: Date.now() - waited, backups };
+      return {
+        scope,
+        systemProxySuppressed: suppressed,
+        externalControlEnabled: externalControl,
+        channel,
+        ports: channel.ports,
+        waitedMs: Date.now() - waited,
+        backups,
+      };
     } catch (err) {
       // 启动失败必须还原：用户看到 core_not_running 时机器状态应与调用前一致。
       // 条件是"动过任何一个键"，只看 suppressed 会漏掉 scope=global + enableExternalControl 这条路径。
-      if (suppressed || externalControl) await this.restore(['verge.yaml']).catch(() => {});
+      // 还原用入口那一批备份，不用"最近一次备份"：中途每次 patchVerge 都又备了一份，
+      // 最近那份已经带着压制后的值，拿它还原等于没还原（session + enableExternalControl 组合下尤其明显）。
+      if (suppressed || externalControl) await this.restoreFrom(backups).catch(() => {});
       throw err.kind === 'channel_unavailable' ? new ApiError('core_not_running', err.message, 'CVR 已启动但控制器不可达；可能需要在 GUI 开启外部控制') : err;
     }
   }
@@ -2547,25 +2602,25 @@ class CvrConfig {
     for (const image of ['clash-verge.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe']) {
       if (await this.taskkill(image)) killed.push(image);
     }
-    let restored = false;
-    if (restore) {
-      const r = await this.restore(DEFAULT_BACKUP_NAMES);
-      restored = r.restored.length > 0;
-      return { killed, restored, restoredList: r.restored };
-    }
-    return { killed, restored: false };
+    if (!restore) return { killed, restored: false };
+    const r = await this.restore(DEFAULT_BACKUP_NAMES);
+    return { killed, restored: r.restored.length > 0, restoredList: r.restored };
   }
 
-  async restore(names = DEFAULT_BACKUP_NAMES) {
+  async restoreFrom(list) {
     const restored = [];
-    for (const name of names) {
-      const b = this.latestBackupFor(name);
-      if (!b) continue;
-      try { this.fs.copyFileSync(b.backupPath, this.file(name)); restored.push({ name, backupPath: b.backupPath, ts: b.ts }); }
-      catch (e) { throw new ApiError('config_write_failed', `还原 ${name} 失败: ${e.code || e.message}`, `备份文件 ${b.backupPath} 可能被占用`); }
+    for (const b of list || []) {
+      if (!b || b.skipped || !b.backupPath) continue;
+      try { this.fs.copyFileSync(b.backupPath, this.file(b.name)); restored.push({ name: b.name, backupPath: b.backupPath, ts: b.ts }); }
+      catch (e) { throw new ApiError('config_write_failed', `还原 ${b.name} 失败: ${e.code || e.message}`, `备份文件 ${b.backupPath} 可能被占用`); }
     }
     return { restored };
   }
+
+  async restore(names = DEFAULT_BACKUP_NAMES) {
+    return this.restoreFrom(names.map((name) => this.latestBackupFor(name)).filter(Boolean));
+  }
+
   modifiedSinceBackup(names = DEFAULT_BACKUP_NAMES) {
     const modified = [];
     for (const name of names) {
@@ -2582,14 +2637,49 @@ class CvrConfig {
 }
 
 module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, ApiError, defaultWaitForChannel };
+
 ```
 
-- [ ] **Step 4: 修测试与实现的对齐点**
+- [ ] **Step 4: 对齐点与实做时踩到的坑**
 
 `module.exports` 里导出 `ApiError` 只是为了测试构造 `channel_unavailable`；测试文件的 `new C.ApiError(...)` 因此可用。若 `waitForChannel` 抛的是 `ApiError`，`start()` 会把它转成 `core_not_running` —— 测试断言允许两者之一，保持这个宽松度（真实语义是"CVR 起来了但连不上"，两种分类都算可接受，hint 已写清）。
 
+计划原稿在这一层有五个会导致"回滚其实没发生"的缺陷，都改了，逐条记下：
+
+1. **构造参数名与测试/接口对不上**：原实现写的是 `spawnImpl / execFileImpl / discoverImpl`，而本任务
+   的测试和上面的 Interfaces 用的都是 `spawn / execFile / discover`。照原稿写下去，注入不会生效，
+   `start` / `stop` 那几条测试会去调**真的 `child_process.spawn`**（在这台机器上就是去启动 Clash Verge）。
+   现在按测试/接口命名为准。
+2. **`listBackups` 的过滤正则多了一个前导点**：备份文件名是 `verge.yaml.<ts>.bak`，`readdirSync` 给的
+   是裸文件名，`\.(?:verge|...)` 永远匹配不上，于是 `listBackups()` 恒为空 —— `restore()` 什么都不还原、
+   `modifiedSinceBackup()` 永远报干净、`start()` 失败后的自动回滚静默失败。这一条最危险，因为对外
+   承诺的"失败自动还原"会变成假的。改成 `^(?:verge|profiles|config)\.yaml\.[\d-]+\.bak$`。
+3. **备份时间戳只到毫秒，同一次 `start()` 会自己覆盖自己**：`start()` 先 backup，`patchVerge()` 每次写入
+   前又 backup；同一毫秒内三次调用算出同一个 `ts`，写进同一个文件名。第二次写下去的内容是"压制后"
+   的，入口那份 pristine 备份就没了。备份名末尾加实例序号（`-001` 补零，保证字符串排序仍等于时间序）。
+4. **回滚要还原到"进入 `start()` 之前"，不是"最近一次备份"**：session + `enableExternalControl` 同时改两个
+   键时，最近一次备份带着压制后的值，拿它还原等于只回滚了一半。新增 `restoreFrom(list)` 按显式备份
+   路径还原，`start()` 的 catch 用它回滚 `backups`（入口那一批）；`restore(names)` 改为 `restoreFrom` 的
+   薄封装，别再让两条路径各自实现一遍拷贝。
+5. **`exePath` 存在性检查必须放在任何写入之前**：原稿在改完 verge.yaml、spawn 之前才检查，于是
+   "没装 CVR"要先把用户配置改脏再抛 `not_installed`。提到 `start()` 第一行，测试里也断言了
+   "not_installed 时文件未动、spawn 未被调用"。副作用：沙箱必须真的存在那个 exe 占位文件
+   （`mkSandbox` 里写 `clash-verge.exe`），否则 `start` 系列测试全部在检查处就退出。
+
+另有三处小的对不齐：
+
+- `suppressSystemProxy()` 的返回值是 `{ changed }`（Interfaces 就这么写的），原测试直接
+  `changed.map(...)` 会 `TypeError`；改成解构。
+- 测试桩里 `opts.stdio.join(',')`：实现用的是 `stdio: 'ignore'`（字符串没有 `.join`）。桩里改用
+  `[].concat(opts.stdio).join(',')`，两种写法都吃得下。
+- 原测试有一行 `fs.chmodSync(configDir, 0o444)`：Windows 上它对"让 copyFile 失败"没有可靠作用，
+  真正制造失败的是注入的 `boomFs`，删掉以免留下一个看似有效其实无效的守卫。
+
+`patchScalar` 的"键缺失则追加"分支原来用一个 `.filter()` 去掉重复空行，条件恒不成立；换成按
+`text.endsWith('\n')` 决定是否需要补行尾，行为一致但读得下去。
+
 Run: `node --test test/cvr-config.test.js`
-Expected: PASS（14 个测试）。
+Expected: PASS（16 个测试）。
 
 - [ ] **Step 5: 全量测试与提交**
 
