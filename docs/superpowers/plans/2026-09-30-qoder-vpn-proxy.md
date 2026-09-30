@@ -71,11 +71,11 @@
 **Interfaces:**
 - Produces: 一条结论写进 probe 文档，供 Task 7 决定 `createTransport()` 的默认顺序；供 Task 10 决定 `startCore()` 是否必须先开 TCP 外部控制。
 
-- [ ] **Step 1: 向用户取得启动 Clash Verge 的许可**
+- [x] **Step 1: 向用户取得启动 Clash Verge 的许可**
 
 显式说明三件事后再动手：会启动 GUI 进程与托盘图标；因 `enable_system_proxy: true`，整机会走代理（浏览器、游戏等受影响）；验证结束会还原。用户同意才继续。
 
-- [ ] **Step 2: 备份当前 verge.yaml 与记录系统代理原状**
+- [x] **Step 2: 备份当前 verge.yaml 与记录系统代理原状**
 
 ```bash
 CVR="$APPDATA/io.github.clash-verge-rev.clash-verge-rev"
@@ -85,7 +85,7 @@ cmd //c "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet 
 
 Expected: 打印出备份文件与"无 ProxyEnable 项"。把原状记进 probe 文档。
 
-- [ ] **Step 3: 启动 CVR**
+- [x] **Step 3: 启动 CVR**
 
 ```bash
 cmd //c start "" "C:\\Program Files\\Clash Verge\\clash-verge.exe"
@@ -96,7 +96,7 @@ netstat -ano -p tcp | grep LISTEN | grep -E ':(7897|7898|7899|9097)\b' || echo "
 
 Expected: 两个进程都在；7897 监听；**9097 不监听**（证明 TCP 控制口确实关着）。
 
-- [ ] **Step 4: 写探针脚本，用 `socketPath` 走命名管道**
+- [x] **Step 4: 写探针脚本，用 `socketPath` 走命名管道**
 
 `qoder-vpn-proxy/scripts/probe-pipe.js`：
 
@@ -129,16 +129,18 @@ const base = { path: '/version', headers: { Host: 'localhost', Authorization: `B
 })();
 ```
 
-- [ ] **Step 5: 跑探针并记录原始输出**
+- [x] **Step 5: 跑探针并记录原始输出**
 
 Run: `cd qoder-vpn-proxy && node scripts/probe-pipe.js`
 Expected: 三条 JSON。关键看 `pipe /version` 是否 `status:200` 且 body 含 mihomo 版本；`tcp /version` 预期 `error: ECONNREFUSED`。
 
 - [ ] **Step 6: 若管道失败，测降级路径**
 
+  > **未触发，故意留空**：Step 5 的命名管道一次成功（`enable_external_controller:false` 也能跑完整 REST），所以这条降级分支不需要走。TCP 兜底代码仍保留并测试（Task 7），因为换机器可能就是另一回事。结论见 `docs/superpowers/probes/01-named-pipe.md`。
+
 管道返回 error 或 401 时：在 GUI 中打开"外部控制"（或直接改 `verge.yaml` 的 `enable_external_controller: true` 并重启 CVR），再跑一次 Step 5，记录 TCP 通道是否可用。这条结论决定 Task 7 的默认顺序。
 
-- [ ] **Step 7: 还原现场**
+- [x] **Step 7: 还原现场**
 
 ```bash
 taskkill //IM clash-verge.exe //F
@@ -151,7 +153,7 @@ netstat -ano -p tcp | grep -E ':(7897|9097)\b' || echo "端口已释放"
 
 Expected: 进程清空、ProxyEnable=0、7897/9097 不再监听。
 
-- [ ] **Step 8: 写结论并提交**
+- [x] **Step 8: 写结论并提交**
 
 `docs/superpowers/probes/01-named-pipe.md` 必须包含：三条 JSON 原始输出（脱敏后）、"命名管道 HTTP 可用 = 是/否"、"TCP 9097 默认可用 = 是/否"、系统代理是否被 CVR 打开、还原是否逐字节一致。
 
@@ -169,7 +171,7 @@ git add -A && git commit -m "probe: 命名管道 mihomo REST 握手实测结论"
 **Interfaces:**
 - Produces: 结论决定 Task 16 是否实现 `hooks/session-start` 的提示注入，以及 Task 13 的 `toolconfig` 是否必须承担全部生效责任。
 
-- [ ] **Step 1: 定位 Qoder CLI 自身的 JS 包**
+- [x] **Step 1: 定位 Qoder CLI 自身的 JS 包**
 
 ```bash
 ls -d "/c/Program Files/Qoder"* 2>/dev/null
@@ -179,7 +181,7 @@ find "/c/Users/Administrator/AppData/Local" -maxdepth 4 -iname '*qoder*' -type d
 
 Expected: 找到 CLI 的 JS 目录（后续 grep 目标）。
 
-- [ ] **Step 2: grep hook 事件与支持字段**
+- [x] **Step 2: grep hook 事件与支持字段**
 
 在 Step 1 找到的 JS 目录里搜：
 
@@ -189,15 +191,15 @@ grep -r -o -E 'hookSpecificOutput|additionalContext|updatedInput|"PreToolUse"|"S
 
 Expected: 出现 `hookSpecificOutput` 与 `additionalContext` 即确认 SessionStart 通道；出现 `updatedInput` 即说明 PreToolUse 可改写工具输入。
 
-- [ ] **Step 3: 记录结论，明确"环境变量注入不可行"**
+- [x] **Step 3: 记录结论，明确"环境变量注入不可行"**
 
 已确认的事实（写进文档，勿再假设）：superpowers 的 `session-start.cjs` 只 `process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext}}))`；`~/.qoder/session-env/<uuid>/sessionstart-hook-N.sh` 是 Qoder 自己创建的空文件，**不是**被 source 的注入点。因此 hook 无法 export 环境变量给 Bash 工具。
 
-- [ ] **Step 4: 标注需重启才能终验**
+- [x] **Step 4: 标注需重启才能终验**
 
 插件的 hook 需 Qoder 重启才生效，而重启会中断当前会话。文档中写明：最终验证放在 Task 17，由用户手动重启后确认新会话是否出现代理提示。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add docs/superpowers/probes/02-hooks.md && git commit -m "probe: Qoder hook 能力边界与 additionalContext 机制"
@@ -220,7 +222,7 @@ git add docs/superpowers/probes/02-hooks.md && git commit -m "probe: Qoder hook 
   - `envelope.ok(data) -> {ok:true, data}`；`envelope.fail(kind, message, hint) -> {ok:false, kind, message, hint}`；`class ApiError extends Error {constructor(kind, message, hint)}`；`ENVELOPE_KINDS`（§Global Constraints 的 13 个 kind 的数组，用于校验）
   - `redact.redactText(str) -> str`；`redact.redactUrl(str) -> str`
 
-- [ ] **Step 1: 写 package.json**
+- [x] **Step 1: 写 package.json**
 
 ```json
 {
@@ -233,7 +235,7 @@ git add docs/superpowers/probes/02-hooks.md && git commit -m "probe: Qoder hook 
 }
 ```
 
-- [ ] **Step 2: 写失败的测试**
+- [x] **Step 2: 写失败的测试**
 
 `test/redact.test.js`：
 
@@ -273,12 +275,12 @@ test('redactText 对 undefined 与数字安全', () => {
 });
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `cd qoder-vpn-proxy && node --test`
 Expected: FAIL，`Cannot find module '../server/redact'`
 
-- [ ] **Step 4: 实现 redact.js**
+- [x] **Step 4: 实现 redact.js**
 
 `server/redact.js`：
 
@@ -305,7 +307,7 @@ function redactText(value) {
 module.exports = { redactUrl, redactText };
 ```
 
-- [ ] **Step 5: 实现 envelope.js**
+- [x] **Step 5: 实现 envelope.js**
 
 `server/envelope.js`：
 
@@ -342,12 +344,12 @@ function toEnvelope(err) {
 module.exports = { ok, fail, ApiError, ENVELOPE_KINDS, toEnvelope };
 ```
 
-- [ ] **Step 6: 跑测试确认通过**
+- [x] **Step 6: 跑测试确认通过**
 
 Run: `node --test`
 Expected: PASS（5 个测试）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add qoder-vpn-proxy/package.json qoder-vpn-proxy/server qoder-vpn-proxy/test
@@ -366,7 +368,7 @@ git commit -m "feat: envelope 与 redact —— 统一返回结构与 token/节�
 - Consumes: 无（纯函数，端口由调用方传入）
 - Produces: `buildProxyEnv({mixedPort, socksPort, noProxyExtra?: string[]}) -> { proxyUrl, socksUrl, vars: {HTTP_PROXY,HTTPS_PROXY,ALL_PROXY,NO_PROXY}, shell: string[], npm: string[], git: string[], pip: string[] }`；`inlinePrefix(env) -> string`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/env.test.js`：
 
@@ -415,12 +417,12 @@ test('shell 片段是可直接 export 的形式', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/env.test.js`
 Expected: FAIL，`Cannot find module '../server/env'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `server/env.js`：
 
@@ -464,12 +466,12 @@ function inlinePrefix(e) {
 module.exports = { buildProxyEnv, inlinePrefix, GIT_PROXY_HOSTS };
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test test/env.test.js`
 Expected: PASS（5 个测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add qoder-vpn-proxy/server/env.js qoder-vpn-proxy/test/env.test.js
@@ -498,7 +500,7 @@ git commit -m "feat: env 生成按 curl/npm/git 分别适配的代理配置"
   - `decodeBody(body, format) -> {yaml: string|null, nodes: number}`
   - `fetchSubscription(url, {timeoutMs?}) -> Promise<{format, userInfo, name, yaml, nodes, bytes}>`（失败抛 `ApiError`）
 
-- [ ] **Step 1: 准备 fixture**
+- [x] **Step 1: 准备 fixture**
 
 用 Task 1 之前已跑通的抓取方式生成 fixture。抓取产物放在仓库外（`%TEMP%`），再用一次性脱敏脚本写入 `test/fixtures/`，**原始文件绝不进仓库、也不打印到终端**：
 
@@ -522,7 +524,7 @@ printf '<!DOCTYPE html>\n<html><head><title>会员订阅</title></head><body>登
 - base64 fixture 由解码后的**假节点**重新编码（`ss://` 用 `REDACTED` 凭据 + `192.0.2.10`），
   节点名保留以覆盖中文/emoji/竖线等形状。
 
-- [ ] **Step 2: 写失败的测试**
+- [x] **Step 2: 写失败的测试**
 
 `test/subscription.test.js`：
 
@@ -579,12 +581,12 @@ test('html 判定为格式异常并抛 ApiError', () => {
 });
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `node --test test/subscription.test.js`
 Expected: FAIL，`Cannot find module '../server/subscription'`
 
-- [ ] **Step 4: 实现**
+- [x] **Step 4: 实现**
 
 `server/subscription.js`：
 
@@ -703,17 +705,17 @@ function fetchSubscription(url, { timeoutMs = 25000 } = {}) {
 module.exports = { CLASH_UA, sniffFormat, parseUserInfo, parseSubscriptionName, decodeBody, countNodes, fetchSubscription };
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `node --test test/subscription.test.js`
 Expected: PASS（7 个测试）。若 `sniffFormat(fx('sub-base64.txt'))` 判成 `unknown`，检查 fixture 是否含换行并被 `oneLine` 分支正确解码。
 
-- [ ] **Step 6: 确认 fixture 已脱敏**
+- [x] **Step 6: 确认 fixture 已脱敏**
 
 Run: `grep -E -o '(server:|password:|uuid:)\s*\S+' test/fixtures/sub-yaml.txt | grep -v -E '192\.0\.2\.10|REDACTED' || echo "脱敏 OK"`
 Expected: `脱敏 OK`。仓库里绝不能留真实节点地址。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add qoder-vpn-proxy/server/subscription.js qoder-vpn-proxy/test
@@ -739,7 +741,7 @@ git commit -m "feat: subscription 抓取与 UA 门控格式嗅探(含脱敏 fixt
   - 路由：`GET /version`、`GET /configs`、`PUT /configs`、`GET /proxies`、`GET /proxies/{name}`、`PUT /proxies/{name}`、`GET /proxies/{name}/delay?url=&timeout=`、`POST /profiles/{uid}/update`、未匹配 404、`Authorization` 不符 401。
   - 名为 `dead-node` 的节点 delay 请求返回 503（模拟超时/失败节点）。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/fake-mihomo.test.js`：
 
@@ -794,12 +796,12 @@ test('dead-node 测速返回 503', async () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/fake-mihomo.test.js`
 Expected: FAIL，`Cannot find module './fake-mihomo'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `test/fake-mihomo.js`：
 
@@ -911,7 +913,7 @@ async function startFake({ pipeName, port = 0, secret = 'set-your-secret', mixed
 module.exports = { startFake };
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test test/fake-mihomo.test.js`
 Expected: PASS（3 个测试）。三条实测踩过的坑：
@@ -924,14 +926,14 @@ Expected: PASS（3 个测试）。三条实测踩过的坑：
 - 若报 `proxy group not found`，检查 `PROXIES` 的组名与断言里的 `节点选择` 是否逐字符一致（全角字符易被编辑器改错）。
   若 `ECONNREFUSED` 断言不稳定，说明 `port` 传的不是 `0` —— 必须让 fake 自己探空闲端口。
 
-- [ ] **Step 5: 跑全量测试**
+- [x] **Step 5: 跑全量测试**
 
 Run: `node --test`
 Expected: PASS，Task 3–6 的全部测试绿。注意 Node 会把 `test/` 目录下的**每个** `.js` 都当测试文件收集，
 所以 `test/fake-mihomo.js` 这种纯导出的辅助文件也会占一条 `ok`（本任务后总数 = 断言测试数 + 1）。
 以后核对数量时把这条算进去，不要误以为某个测试消失了。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add qoder-vpn-proxy/test/fake-mihomo.js qoder-vpn-proxy/test/fake-mihomo.test.js
@@ -960,7 +962,7 @@ Task 1 的结论决定 `ORDER`：本任务先按"命名管道可用"实现；若
   - `createTransport(runtime, {timeoutMs?}) -> Promise<Transport>`
     按 `pipe → tcp` 顺序对 `/version` 探活，返回第一个成功的传输。`request` 对非 2xx **不抛异常**（只回 `status`），只在传输层失败时抛 `ApiError`：连接类错误（`ECONNREFUSED`/`ENOENT` 等）→ `channel_unavailable`，超时 → `timeout`，全通道 401 → `auth_failed`。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/transport.test.js`：
 
@@ -1064,12 +1066,12 @@ test('PUT 带对象 body 时自动序列化并写回 state', async () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/transport.test.js`
 Expected: FAIL，`Cannot find module '../server/transport'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `server/transport.js`：
 
@@ -1227,7 +1229,7 @@ async function createTransport(runtime, { timeoutMs = 3000 } = {}) {
 module.exports = { DEFAULT_TIMEOUT_MS, parseTarget, PipeTransport, TcpTransport, createTransport };
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test test/transport.test.js`
 Expected: PASS（8 个测试）。"TCP 兜底"那条传的是 `controller: {pipe: null, ...}`，`ORDER` 的 pipe 分支见 `!controller.pipe` 会 `continue` —— 不要改成传一个不存在的管道名，那样测的是错误分支。
@@ -1237,7 +1239,7 @@ Expected: PASS（8 个测试）。"TCP 兜底"那条传的是 `controller: {pipe
 `encodePath()`。编码放在 `send()` 这个唯一出口，Task 9 的调用方就不用各自记得转义；
 而"非 2xx"那条传的是已编码路径，`encodePath` 对 `%XX` 不动，两种写法都能通。
 
-- [ ] **Step 5: 全量测试与提交**
+- [x] **Step 5: 全量测试与提交**
 
 ```bash
 node --test
@@ -1277,7 +1279,7 @@ git commit -m "feat: transport 抽象(管道优先/TCP 兜底/auth_failed 与 ch
   - `discover({env?, fsImpl?, exec?}?) -> Promise<Runtime>`
   - `Runtime = {installed, running, configDir, configSource, installDir, exePath, corePath, ports, controller, secret, settings, profiles, warnings[], channelHint}`
 
-- [ ] **Step 1: 生成 fixture**
+- [x] **Step 1: 生成 fixture**
 
 ```bash
 mkdir -p qoder-vpn-proxy/test/fixtures && cd qoder-vpn-proxy/test/fixtures
@@ -1291,7 +1293,7 @@ grep -E -o 'token=[0-9a-f]{16}' *.yaml || echo "fixture 无真实 token"
 
 Expected: `fixture 无真实 token`。`verge.yaml` 若含 `remote` 类字段或自定义 UA，保留（那些不是凭据）；若出现任何含 token 的 URL，替换为 `TOKEN_PLACEHOLDER`。
 
-- [ ] **Step 2: 写失败的测试**
+- [x] **Step 2: 写失败的测试**
 
 `test/discovery.test.js`：
 
@@ -1442,12 +1444,12 @@ test('discover：config.yaml 缺失时降级到 clash-verge.yaml 并记 warning'
 });
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `node --test test/discovery.test.js`
 Expected: FAIL，`Cannot find module '../server/discovery'`
 
-- [ ] **Step 4: 实现**
+- [x] **Step 4: 实现**
 
 `server/discovery.js`：
 
@@ -1718,7 +1720,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 5: 跑测试确认失败/通过**
+- [x] **Step 5: 跑测试确认失败/通过**
 
 Run: `node --test test/discovery.test.js`
 Expected: PASS（10 个测试）。
@@ -1740,7 +1742,7 @@ Expected: PASS（10 个测试）。
 6. **`configDir` 为 `null` 时原来不记 warning**：调用方只看到"什么都没读到"。补 else 分支，把
    APPDATA 的实际值写进 warning。
 
-- [ ] **Step 6: 对真机跑一遍解析（只读，不改任何文件）**
+- [x] **Step 6: 对真机跑一遍解析（只读，不改任何文件）**
 
 ```bash
 cd qoder-vpn-proxy && node -e "
@@ -1750,7 +1752,7 @@ discover().then(r=>console.log(JSON.stringify({installed:r.installed,running:r.r
 
 Expected: `installed:true`、`configSource:"config.yaml"`、`ports.mixed:7897`、`controller.tcp:null`、`controller.pipe:"\\\\.\\pipe\\verge-mihomo"`、`settings.enableSystemProxy:true`、`current:"Rq14DVii2DNo"`、`items:8`、`warnings:[]`。任何不符都先修解析再进下一个任务。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add qoder-vpn-proxy/server/discovery.js qoder-vpn-proxy/test/fixtures qoder-vpn-proxy/test/discovery.test.js
@@ -1780,7 +1782,7 @@ git commit -m "feat: discovery 只读发现(CVR 开关优先于 config.yaml 声�
   - `closeConnections()`、`reload({proxyProviders?}?)`、`connections() -> {total, uplink, downlink, connections[]}`
   - `DEFAULT_DELAY_URL`、`BUILT_IN`、`GROUP_TYPES`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/clash-client.test.js`：
 
@@ -1883,12 +1885,12 @@ test('401 在客户端层转成 auth_failed', async () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/clash-client.test.js`
 Expected: FAIL，`Cannot find module '../server/clash-client'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `server/clash-client.js`：
 
@@ -2050,7 +2052,7 @@ class ClashClient {
 module.exports = { ClashClient, DEFAULT_DELAY_URL, BUILT_IN: [...BUILT_IN], GROUP_TYPES: [...GROUP_TYPES] };
 ```
 
-- [ ] **Step 4: 给 fake 补 reload / connections 路由并支持 `name` 写法**
+- [x] **Step 4: 给 fake 补 reload / connections 路由并支持 `name` 写法**
 
 mihomo 文档化的切换 body 字段是 `{"name": "..."}`（`target` 是旧别名）。把 `test/fake-mihomo.js` 的 `makeHandlers` 里 PUT `/proxies/{g}` 分支换成下面版本，并在 404 兜底之前插入三条路由：
 
@@ -2076,7 +2078,7 @@ mihomo 文档化的切换 body 字段是 `{"name": "..."}`（`target` 是旧别�
 Run: `node --test test/fake-mihomo.test.js test/clash-client.test.js`
 Expected: 两个文件都 PASS（fake 3 个 + client 9 个）。Task 6 那条用 `{target}` 的旧测试仍应通过 —— 这就是同时保留 `spec.name || spec.target` 的原因。
 
-- [ ] **Step 5: 全量测试与提交**
+- [x] **Step 5: 全量测试与提交**
 
 ```bash
 node --test
@@ -2113,7 +2115,7 @@ git commit -m "feat: clash-client mihomo REST 语义层(切换后回读确认/�
     - `modifiedSinceBackup(names?) -> {modified: [{name, backupTs}]}`（**同步**方法；逐字节比对当前文件与最近一次备份。spec §3.5 要求 `proxy_status` 显示"当前配置是否被插件改过"，而"存在备份"在还原之后仍为真，所以不能拿 `listBackups().length` 顶替）
   - 常量 `SUPPRESS_KEYS = ['enable_system_proxy', 'enable_proxy_guard']`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/cvr-config.test.js`：
 
@@ -2368,12 +2370,12 @@ test('stop：taskkill 两个镜像，restore=true 时还原备份', async () => 
 
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/cvr-config.test.js`
 Expected: FAIL，`Cannot find module '../server/cvr-config'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `server/cvr-config.js`：
 
@@ -2640,7 +2642,7 @@ module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, 
 
 ```
 
-- [ ] **Step 4: 对齐点与实做时踩到的坑**
+- [x] **Step 4: 对齐点与实做时踩到的坑**
 
 `module.exports` 里导出 `ApiError` 只是为了测试构造 `channel_unavailable`；测试文件的 `new C.ApiError(...)` 因此可用。若 `waitForChannel` 抛的是 `ApiError`，`start()` 会把它转成 `core_not_running` —— 测试断言允许两者之一，保持这个宽松度（真实语义是"CVR 起来了但连不上"，两种分类都算可接受，hint 已写清）。
 
@@ -2681,7 +2683,7 @@ module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, 
 Run: `node --test test/cvr-config.test.js`
 Expected: PASS（16 个测试）。
 
-- [ ] **Step 5: 全量测试与提交**
+- [x] **Step 5: 全量测试与提交**
 
 ```bash
 node --test
@@ -2716,7 +2718,7 @@ git commit -m "feat: cvr-config 备份/压制系统代理/启停 CVR(失败即�
   - `yamlScalar(value) -> string`（`null -> null`；需要时加双引号）
   - 全部改不动的 uid 一律抛 `ApiError('subscription_not_found')`；uid 重复抛 `ApiError('malformed_config')`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/profilesYaml.test.js`：
 
@@ -2844,12 +2846,12 @@ test('yamlScalar 处理 null、数字与含冒号的字符串', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/profilesYaml.test.js`
 Expected: FAIL，`Cannot find module '../server/profilesYaml'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `server/profilesYaml.js`：
 
@@ -3135,7 +3137,7 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 4: 用"round-trip 恒等"驱动实现收敛（这一步不是可选的）**
+- [x] **Step 4: 用"round-trip 恒等"驱动实现收敛（这一步不是可选的）**
 
 空行归属是这一层最容易出错的地方。最终模型只有一条不变量：**`render(parse(x)) === x`**。为此实现把"文件以换行结尾"从内容里剥出来单独记账，而不是让空行在块之间找主人 ——
 
@@ -3168,7 +3170,7 @@ const bare=raw.replace(/\n+$/,''); console.log('no-trailing-nl', P.render(P.pars
 "
 ```
 
-- [ ] **Step 5: 全量测试与提交**
+- [x] **Step 5: 全量测试与提交**
 
 ```bash
 node --test
@@ -3210,7 +3212,7 @@ git commit -m "feat: profilesYaml 外科式编辑(round-trip 恒等为主验收)
     - `Entry = {uid, name, url(redacted), urlPathOnly, file, type, active, nodes, userInfo, updated, autoUpdate, updateInterval, remark, addedAt, source}`
   - 写 `profiles.yaml` 一律：`backup → 写 → 立即重读校验 → 不一致则从备份回滚并抛 profile_registry_desync`
 
-- [ ] **Step 1: 写 store 的失败测试**
+- [x] **Step 1: 写 store 的失败测试**
 
 `test/store.test.js`：
 
@@ -3297,7 +3299,7 @@ test('stamp 连续调用不撞名（同毫秒内两次备份不能写到同一�
 });
 ```
 
-- [ ] **Step 2: 实现 store.js**
+- [x] **Step 2: 实现 store.js**
 
 `server/store.js`：
 
@@ -3388,12 +3390,12 @@ module.exports = {
 };
 ```
 
-- [ ] **Step 3: 跑 store 测试**
+- [x] **Step 3: 跑 store 测试**
 
 Run: `node --test test/store.test.js`
 Expected: PASS（6 个测试）。
 
-- [ ] **Step 4: 写 subscriptions 的失败测试**
+- [x] **Step 4: 写 subscriptions 的失败测试**
 
 `test/subscriptions.test.js`（关键：全程对着沙箱目录跑，`fetchImpl` 注入固定结果，不打真实网络）：
 
@@ -3656,7 +3658,7 @@ test('updateAll 跳过 autoUpdate 关闭的项', async () => {
 });
 ```
 
-- [ ] **Step 5: 实现 subscriptions.js**
+- [x] **Step 5: 实现 subscriptions.js**
 
 `server/subscriptions.js`：
 
@@ -3959,7 +3961,7 @@ class SubscriptionRepo {
 module.exports = { SubscriptionRepo, newUid, UID_ALPHABET, REGISTRY };
 ```
 
-- [ ] **Step 6: 备份路径收敛（不留 TODO）与本轮落地的判断**
+- [x] **Step 6: 备份路径收敛（不留 TODO）与本轮落地的判断**
 
 Step 5 草稿里 `this.cvr.backupSync([REGISTRY])` 这个同步备份方法在 Task 10 的 `CvrConfig` 上并不存在，按预定选择第二种：
 订阅层自己用 `inlineBackup()`，只有一条备份代码路径，与 `verge.yaml` 的备份共用 `store.stamp()` 命名
@@ -3980,7 +3982,7 @@ Step 5 草稿里 `this.cvr.backupSync([REGISTRY])` 这个同步备份方法在 T
 Run: `node --test test/subscriptions.test.js`
 Expected: PASS（18 个测试；`test/store.test.js` 另 8 个）。
 
-- [ ] **Step 7: 全量测试与提交**
+- [x] **Step 7: 全量测试与提交**
 
 ```bash
 node --test
@@ -4015,7 +4017,7 @@ git commit -m "feat: store 数据目录与订阅仓库(CRUD/写后校验/desync 
     - `async status({hosts?}) -> {npmrc:{path, exists, managed, proxyLines[]}, git:{managed:[{key,value,expected}], mismatch:boolean}, verdict:'managed'|'partial'|'clean'|'foreign'}`
   - 约定：`apply` 幂等（重复 apply 只更新块内容）；`revert` 对干净状态返回 `{action:'noop'}` 而不报错。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/toolconfig.test.js`：
 
@@ -4208,12 +4210,12 @@ test('npmrc 不存在时 apply 会创建，revert 后留空文件而不是删掉
 });
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/toolconfig.test.js`
 Expected: FAIL，`Cannot find module '../server/toolconfig'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `server/toolconfig.js`：
 
@@ -4448,7 +4450,7 @@ class ToolConfig {
 module.exports = { ToolConfig, buildNpmrcBlock, stripNpmrcBlock, gitProxyKeys, MARK_BEGIN, MARK_END };
 ```
 
-- [ ] **Step 4: 判定表与本轮落地的判断（不留 TODO）**
+- [x] **Step 4: 判定表与本轮落地的判断（不留 TODO）**
 
 Step 3 草稿的 `verdict` 那段有重复分支（`range || managed.some(...)` 两个分支都返回 `partial`），按 spec 验收 6 的语义收敛成
 `managed / partial / foreign / clean` 四档 —— 已并入 Step 3 的最终代码。
@@ -4473,7 +4475,7 @@ Step 3 草稿的 `verdict` 那段有重复分支（`range || managed.some(...)` 
 Run: `node --test test/toolconfig.test.js`
 Expected: PASS（13 个测试）。`status 三种状态` 那条如果 `foreign` 判成 `clean`，说明 `proxyLines` 正则漏了没有托管块的裸 `proxy=` 行。
 
-- [ ] **Step 5: 全量测试与提交**
+- [x] **Step 5: 全量测试与提交**
 
 ```bash
 node --test
@@ -4503,7 +4505,7 @@ git commit -m "feat: toolconfig npmrc 托管块与 git 域名代理的 apply/rev
   - 行形状：`{label, url, expectDirect, direct: probeResult, proxied: probeResult|'skipped', conclusion}`
   - `WRITE_OUT`（curl `-w` 模板，导出只为让"4 元组顺序"这件事有唯一出处）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `test/diagnose.test.js`：
 
@@ -4639,12 +4641,12 @@ test('DEFAULT_TARGETS 只列公开站点，不做附带外发', () => {
 
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `node --test test/diagnose.test.js`
 Expected: FAIL，`Cannot find module '../server/diagnose'`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `server/diagnose.js`：
 
@@ -4792,7 +4794,7 @@ module.exports = { DEFAULT_TARGETS, WRITE_OUT, curlArgs, parseCurlOut, probe, ro
 
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `node --test test/diagnose.test.js`
 Expected: PASS（9 个测试）。落地时对草稿测试做了两处改动，都不是美化：
@@ -4803,7 +4805,7 @@ Expected: PASS（9 个测试）。落地时对草稿测试做了两处改动，�
 
 `curlArgs` 里 `--proxy` 插在 `-w` 之前只是可读性，断言只看 `includes`；若你调整顺序，别改动 `--noproxy` 与 `--proxy` 互斥这条。
 
-- [ ] **Step 5: 真机跑一次直连基线（只读，不启动 CVR）**
+- [x] **Step 5: 真机跑一次直连基线（只读，不启动 CVR）**
 
 ```bash
 cd qoder-vpn-proxy && node -e "
@@ -4819,7 +4821,7 @@ Expected: 与 spec §2 基线一致 —— GitHub 两行 FAIL（超时）、npm/
 
 **实测结果（已发生，spec §2 已按此更新）**：5 行全部 `直连OK 200`，`verdict` 为"代理未运行，只完成直连探测"。这不是探测在说谎 —— 单独复核过 3 轮 `github.com` 与 `raw.githubusercontent.com`（6/6 全部 200，对端 `20.205.243.166` / `185.199.108.133` 是真实 GitHub/Fastly IP，connect 约 0.09s），同时确认：本轮 `--noproxy '*'`、`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` 均未设置、7897/7898/7899/9097 全部未监听、`ipconfig` 只有物理网卡和 vEthernet Default Switch（无 TUN 网卡）。结论是**网络状况确实变了，GitHub 直连会随时段翻转**，spec §2 里同时保留首轮与复测两行，并把"是否需要代理"的职责正式交给 `proxy_diagnose` 的当场输出。
 
-- [ ] **Step 6: 全量测试与提交**
+- [x] **Step 6: 全量测试与提交**
 
 ```bash
 node --test
@@ -4854,7 +4856,7 @@ git commit -m "feat: diagnose 直连与经代理对比探测(含 --noproxy 隔�
   - `main() -> void`（index.js：绑定 stdin/stdout，日志只进文件与 stderr；stdin 关闭后收完在途请求再退）
   - `deps` 形状（测试注入用）：`{getRuntime, getClient, getRepo, getCvr, getToolConfig, getDiagnoseDeps, log}`。**只保留被真实消费的键** —— 端口一律从 `getRuntime()` 取，不要再加 `getEnvBlock`/`listBackups`/`now`/`dispose` 这类没人调的注入点。
 
-- [ ] **Step 1: 写 protocol 的失败测试**
+- [x] **Step 1: 写 protocol 的失败测试**
 
 `test/protocol.test.js`：
 
@@ -4936,7 +4938,7 @@ test('handler 抛异常时回 -32603 而不是让服务端崩', async () => {
 });
 ```
 
-- [ ] **Step 2: 实现 protocol.js**
+- [x] **Step 2: 实现 protocol.js**
 
 `server/protocol.js`：
 
@@ -5021,12 +5023,12 @@ module.exports = { PROTOCOL_VERSION, SERVER_INFO, INSTRUCTIONS, framer, handleMe
 
 草稿在这里还要求建 `server/meta.js`（`SERVER_INFO` + `TOOLS_MIN_COUNT` 两个常量）。**落地时没有这个文件**：`SERVER_INFO` 只有 `protocol.js` 自己用，`TOOLS_MIN_COUNT` 是"至少 17 个"这种含糊断言的来源，换成 `test/tools.test.js` 里对 `TOOL_NAMES.length` 的精确相等更硬。为两个常量单开一个模块、再让两个模块各 `require` 一次，是纯粹的间接层。
 
-- [ ] **Step 3: 跑 protocol 测试**
+- [x] **Step 3: 跑 protocol 测试**
 
 Run: `node --test test/protocol.test.js`
 Expected: PASS（8 个测试）。
 
-- [ ] **Step 4: 写 tools 的失败测试**
+- [x] **Step 4: 写 tools 的失败测试**
 
 `test/tools.test.js`（前半：用假 deps 覆盖 17 个工具的 schema 与错误分类；后半：全链路对着 fake-mihomo + 沙箱 profiles）：
 
@@ -5281,7 +5283,7 @@ test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', a
 });
 ```
 
-- [ ] **Step 5: 实现 tools.js**
+- [x] **Step 5: 实现 tools.js**
 
 `server/tools.js`：
 
@@ -5725,7 +5727,7 @@ async function callTool(name, args, deps) {
 module.exports = { buildTools, callTool, TOOL_NAMES };
 ```
 
-- [ ] **Step 6: 落地与草稿的差异（不需要再做，记在这里免得下一个人以为代码写错了）**
+- [x] **Step 6: 落地与草稿的差异（不需要再做，记在这里免得下一个人以为代码写错了）**
 
 草稿的 Step 5 里两个订阅 handler 用了一个靠 `arguments[0]` 反向取参的 `arguments0()`，本步骤原本是用来拆掉它的。实际写作时**一次到位、没有引入这个 hack**：`add`/`edit` 都显式列字段转发（见上一步的 handler），`const TOOL_NAMES_FROM = buildTools;` 这行也没写。留着本步骤只记录这个结论，代码上没有待办。
 
@@ -5748,7 +5750,7 @@ Expected: PASS（9 个测试；草稿这一行写的是 10，落地后 `grep -c 
 - `fake.getClient` 抛的是随手 `new Error()` 再挂 `.kind`/`.hint` → `toEnvelope` 认不出 `ApiError`，落到兜底分支回 `channel_unavailable` + "未预期的错误"，用户看到的提示是空的。改成抛真的 `new ApiError('channel_unavailable', '连不上', '先 start')`；`delay` 同理改成 `ApiError('timeout', …)`，并补一条 `dead.kind === 'timeout'` 断言 —— 坏节点必须被标成超时，`proxy_test` 才排得出序。
 - `RUNTIME.channelHint` 写成占位串 → 未安装场景的回信没有可操作性。换成 `discovery.js` 真实产出的那句（`discovery.test.js` 已断言它含"安装"）。
 
-- [ ] **Step 7: 实现 index.js（stdio 入口）**
+- [x] **Step 7: 实现 index.js（stdio 入口）**
 
 `server/index.js`：
 
@@ -5990,7 +5992,7 @@ test('每一行 stdout 都能独立解析，说明日志没有混进协议通道
 
 落地 `index.js` 时这一步暴露了一个真 bug，处理记录在 Step 8。
 
-- [ ] **Step 8: 端到端跑一次协议（手工冒烟，不需要 CVR 在跑）**
+- [x] **Step 8: 端到端跑一次协议（手工冒烟，不需要 CVR 在跑）**
 
 ```bash
 cd qoder-vpn-proxy && printf '%s\n' \
@@ -6022,7 +6024,7 @@ Expected: `帧数 4`、`工具数 17`、`proxy_status ok= true installed= true`�
 
 改完后：`帧数 4`、`工具数 17`、`proxy_status ok= true running= false installed= true core.reachable= false`、`subscriptions ok= true count= 1`（`count=1` 是本机 `profiles.yaml` 里那条 `remote` 订阅，与 spec §2 的盘点一致）、`stdout 全为合法 JSON: true`。沙箱版同样检查已经固化成 `test/index.test.js` 的两条，回归不会再靠手跑。
 
-- [ ] **Step 9: 全量测试与提交**
+- [x] **Step 9: 全量测试与提交**
 
 ```bash
 node --test
@@ -6059,7 +6061,7 @@ Expected: `# tests 144`（Task 14 收尾时 125，本任务净增 19：protocol 
 - Consumes: `server/index.js`（MCP 入口）、`server/session-start.js`（hook 入口）
 - Produces: 一个被 Qoder 加载的插件，工具名前缀 `mcp__vpn-proxy__*`
 
-- [ ] **Step 1: 写 `.qoder-plugin/plugin.json`**
+- [x] **Step 1: 写 `.qoder-plugin/plugin.json`**
 
 ```json
 {
@@ -6081,7 +6083,7 @@ Expected: `# tests 144`（Task 14 收尾时 125，本任务净增 19：protocol 
 
 Run: `node -e "JSON.parse(require('fs').readFileSync('.qoder-plugin/plugin.json','utf8')); console.log('plugin.json 合法')"`
 
-- [ ] **Step 2: 写 `.mcp.json`（用 Qoder 自带 runtime，不写死 node 路径）**
+- [x] **Step 2: 写 `.mcp.json`（用 Qoder 自带 runtime，不写死 node 路径）**
 
 ```json
 {
@@ -6100,7 +6102,7 @@ Expected: 17 个工具出现在 `mcp_list` 结果里，前缀 `mcp__vpn-proxy__`
 
 若 Qoder 不解析 `${QODER_NODE_RUNTIME}`（服务起不来、工具列表为空），把 `command` 改成 `"node"` 再验证一次；本机 Node v22.23.3 在 PATH 上。两种写法的实际生效情况记进 `docs/superpowers/probes/03-plugin-install.md`。
 
-- [ ] **Step 3: 写 `server/session-start.js`（探到代理可连才提示）**
+- [x] **Step 3: 写 `server/session-start.js`（探到代理可连才提示）**
 
 ```js
 'use strict';
@@ -6248,7 +6250,7 @@ test('装了 CVR 但代理端口没在听时不提示（避免让用户照着前
 Run: `node --test test/session-start.test.js`
 Expected: PASS（3 个测试）。第二条会真的起一个监听端口再让 hook 去探 —— hook 的价值就在"只在能连时说话"，用假返回值测它等于没测。
 
-- [ ] **Step 4: 写 hook 包装（cmd/bash 双语种 + `hooks.json`）**
+- [x] **Step 4: 写 hook 包装（cmd/bash 双语种 + `hooks.json`）**
 
 `hooks/run-hook.cmd`（沿用已验证的 superpowers 双语种写法：首行 `: << 'CMDBLOCK'` 让 bash 把批处理段当 heredoc 吞掉，cmd.exe 则顺序执行到 `exit /b` 就停）：
 
@@ -6330,7 +6332,7 @@ exec node "${SCRIPT_DIR}/../server/session-start.js" "$@"
 
 `timeout: 5` 是刻意的：hook 在每次会话启动时同步执行，一次 TCP 探活最多几百毫秒；超过 5 秒说明机器有问题，不如不注入提示。**不要**把 `enable_external_controller` 之类改动放进 hook。
 
-- [ ] **Step 5: 写 `skills/vpn-proxy/SKILL.md`**
+- [x] **Step 5: 写 `skills/vpn-proxy/SKILL.md`**
 
 必须含以下段落（内容按 spec §3.4 与 §4 的错误表写，禁止空洞）：
 
@@ -6369,7 +6371,7 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 - `subscription_format_unexpected` → 机场按 UA 分流，或链接已失效；不是插件的 bug。
 ```
 
-- [ ] **Step 6: 写 `README.md`**
+- [x] **Step 6: 写 `README.md`**
 
 至少包含：安装位置与依赖（Clash Verge Rev 已装 + Node ≥ 18）、17 个工具清单表、`scope=session` 与 `scope=global` 的差别、`proxy_toolconfig` 会改哪两个用户级文件如何还原、数据目录 `~/.qoder/vpn-proxy/` 里有什么（`subscriptions.json` / `backups` / `.trash` / `logs/mcp.log`）、如何完全卸载（关插件 + 删数据目录 + `proxy_toolconfig action=revert`）。
 
@@ -6383,7 +6385,7 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 Run: `node -e "JSON.parse(require('fs').readFileSync('.qoder-plugin/plugin.json','utf8')); JSON.parse(require('fs').readFileSync('.mcp.json','utf8')); JSON.parse(require('fs').readFileSync('hooks/hooks.json','utf8'))"`
 Expected: 三个清单都能解析。三个 JSON 里只会有插件自身的名字与路径，不该出现订阅地址或 token。
 
-- [ ] **Step 7: 安装注册（先备份两个 JSON，再改）**
+- [x] **Step 7: 安装注册（先备份两个 JSON，再改）**
 
 **这一步会改动 Qoder 自己的配置，属于全局影响面，动手前向用户确认。**
 
@@ -6417,13 +6419,15 @@ Expected: 三行都打回 true。若 Qoder 重启后拒绝加载（工具列表�
 
 - [ ] **Step 8: 回退路径 —— 只注册 MCP server**
 
+  > **未触发，故意留空**：Step 7 的完整注册已成功（`installed_plugins_v2.json` 与 `settings.json` 两处都写进去了，见 `probes/03-plugin-install.md`），所以这条"只注册 MCP server"的退路没有被启用。前置检查跑过了：`~/.qoder/mcp.json` 确实不存在。若重启后 `@local` 插件加载失败，这条才是第一条要走的退路。
+
 ```bash
 node -e "const fs=require('fs'),os=require('os');console.log(fs.existsSync(require('path').join(os.homedir(),'.qoder','mcp.json')))"
 ```
 
 Expected: `false`（本机确认过没有该文件）。这条回退路线**不承诺**能加载 hook 与 skill，只保证 17 个 MCP 工具可用；启用前用 `mcp-config` skill 落文件，别手改 `settings.json` 的 `mcpServers`（那里现有条目全是 `type:"http"`，stdio 形态未被验证）。同时把 Step 7 写的两个键删回去，避免两份注册同时生效。
 
-- [ ] **Step 9: 提交插件包**
+- [x] **Step 9: 提交插件包**
 
 ```bash
 git add qoder-vpn-proxy
@@ -6436,11 +6440,11 @@ git commit -m "feat: 插件清单/.mcp.json/SessionStart hook/skill/README 并�
 
 **插件的 hook 与 skill 需要重启 Qoder 才生效，而重启会结束当前会话。本任务分两段：重启前能做的自动化验证，和重启后才能做的验收。**
 
-- [ ] **Step 1: 取得用户许可，启动 CVR 做真实链路**
+- [x] **Step 1: 取得用户许可，启动 CVR 做真实链路**
 
 说明清楚：这一步会真实启动 Clash Verge；插件用 `scope=session` 压制系统代理，所以浏览器与游戏不受影响；验证结束会 `proxy_core_stop` 并还原配置。
 
-- [ ] **Step 2: 逐工具真实验证（17 个都过一遍）**
+- [x] **Step 2: 逐工具真实验证（17 个都过一遍）**
 
 ```
 proxy_status → 记下端口、通道、mode
@@ -6459,7 +6463,7 @@ proxy_core_stop → 见 Step 7
 
 Expected: 无一个工具抛非预期异常；返回体全部是 `{ok:...}` 两态。
 
-- [ ] **Step 3: 验收 1 —— github 从直连超时变成经代理 200，且系统代理仍关闭**
+- [x] **Step 3: 验收 1 —— github 从直连超时变成经代理 200，且系统代理仍关闭**
 
 ```bash
 cd qoder-vpn-proxy && node -e "
@@ -6475,7 +6479,7 @@ cmd //c "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet 
 
 Expected: GitHub 两行 `直连FAIL / 代理OK`；PyPI/npm/Qoder 直连 OK；末行显示系统代理关闭（ProxyEnable 不存在或为 0）。**这是验收 1 + 3 的证据**，把原始输出贴进 `docs/superpowers/verification/2026-09-30-acceptance.md`。
 
-- [ ] **Step 4: 验收 2 + 6 —— 不加前缀也让 git/npm 走代理，然后干净还原**
+- [x] **Step 4: 验收 2 + 6 —— 不加前缀也让 git/npm 走代理，然后干净还原**
 
 ```bash
 cd qoder-vpn-proxy && node -e "
@@ -6505,7 +6509,7 @@ cmd //c "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet 
 
 Expected: `verdict:'clean'`、`git http.* 已清空`、`~/.npmrc` 与备份逐字节一致。**这是验收 6**。
 
-- [ ] **Step 5: 验收 5 —— 订阅自主维护，并把「南山云」换成新链接**
+- [x] **Step 5: 验收 5 —— 订阅自主维护，并把「南山云」换成新链接**
 
 ```
 proxy_subscription_add {url: 新链接, name: "南山云(新)", remark: "2026-09-30 换地址"}
@@ -6520,7 +6524,7 @@ proxy_subscription_remove {uid: 旧条目}                 → 成功，profiles
 
 Expected: 每一步都是 `{ok:true}`；删除后 `~/.qoder/vpn-proxy/.trash/` 里能看到被移走的 profile 文件，手工放回即可撤销。**若出现 `profile_registry_desync`，说明 spec §4 记录的 CVR 内存态回写确实存在** —— 此时改为"先 `proxy_core_stop` 再做订阅操作，最后 `proxy_core_start`"，并把这条结论写回 spec §8 与本计划。
 
-- [ ] **Step 6: 验收 7 —— 全程无凭据泄露**
+- [x] **Step 6: 验收 7 —— 全程无凭据泄露**
 
 ```bash
 grep -r -I -E 'token=[0-9a-f]{16,}|62ffcf3f' ~/.qoder/vpn-proxy/ qoder-vpn-proxy/ 2>/dev/null | grep - -v 'profiles.yaml' || echo "插件侧无明文 token"
@@ -6529,7 +6533,7 @@ grep -c -E '62ffcf3f' ~/.qoder/vpn-proxy/logs/mcp.log 2>/dev/null || echo "日�
 
 Expected: 插件数据目录、日志、测试 fixture、仓库源码里都查不到真实 token；只有 CVR 自己的 `profiles.yaml` 允许保存原值（那是它的工作文件）。**这是验收 7**；若日志命中，立刻定位是哪一层没走 `redactText` 并补测试。
 
-- [ ] **Step 7: 验收 8 —— 配置逐字节还原**
+- [x] **Step 7: 验收 8 —— 配置逐字节还原**
 
 ```bash
 cd qoder-vpn-proxy && node -e "
@@ -6546,7 +6550,7 @@ for(const b of bs.slice(0,2)) console.log(b.name, h(b.backupPath)===h(require('p
 
 然后 `proxy_restore_config`，再跑一次哈希对比。**Expected: 全部"一致" —— 这是验收 8**。
 
-- [ ] **Step 8: 收尾（proxy_core_stop + 现场核对）**
+- [x] **Step 8: 收尾（proxy_core_stop + 现场核对）**
 
 ```bash
 cd qoder-vpn-proxy && node -e "
@@ -6569,7 +6573,7 @@ Expected: 三项都干净。
 
 把用户反馈逐字记进验收文档。若 hook 没生效，按 probe 文档 `02-hooks.md` 的结论排查顺序：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 5 秒内是否退出。
 
-- [ ] **Step 10: 写验收文档并提交**
+- [x] **Step 10: 写验收文档并提交**
 
 `docs/superpowers/verification/2026-09-30-acceptance.md`：9 条验收逐条列"证据（原始命令输出）/ 结论 / 遗留问题"。spec §8 的 6 条未验证项必须有明确答案（管道是否可用、PreToolUse 是否支持 updatedInput、CVR 是否覆盖 profiles.yaml、新链接节点集合、Qoder 自身请求是否读系统代理、`@local` source 能否加载）。
 
@@ -6579,6 +6583,28 @@ git commit -m "docs: qoder-vpn-proxy 验收记录与 spec 未验证项结论"
 ```
 
 ---
+
+#### Task 17 落地记录（真机跑完后的差异，plan == code 的"差异"部分）
+
+**跑了什么**：CVR 真实启动 → 17 个工具逐个真调 → 9 条验收取证据 → `proxy_core_stop` 收尾还原。全量测试从 147 涨到 **154**（`node --test --test-force-exit`，`# fail 0`）。完整证据在 `docs/superpowers/verification/2026-09-30-acceptance.md`，管道与端点矩阵在 `docs/superpowers/probes/01-named-pipe.md`，安装过程在 `probes/03-plugin-install.md`。
+
+**Step 3 的 Expected 有一处不成立**：草稿假定 `PUT /configs` 能改 mode。真机 mihomo v1.19.25 对 `PUT /configs` **回 204 却什么都不改**，只有 `PATCH` 生效。已按 TDD 改 `clash-client.js` 用 PATCH，并把 `fake-mihomo.js` 的 PUT 分支改成"回 204 但不改状态"，让 fake 与真机一致（commit `25093e7`）。
+
+**Step 3 还暴露一个解析 bug**：curl 8.17.0 在连接失败时 `%{remote_ip}` 打的是**空串**，`parseCurlOut` 的四段正则整行匹配失败，把 `totalMs` 一起丢了（表现是 `direct.totalMs: null`）。第 4 段改成可选 + `remoteIp: m[4] ?? null`（commit `280cf21`）。
+
+**Step 5 的备用路径没被触发**：计划预设"若 `profile_registry_desync` 就先停核心再改订阅"，实测全程没出现 —— 插件的写后重读校验都过了。但真机给出另一条更硬的事实：**mihomo v1.19.25 没有 `POST /configs/reload`（404）**，所以 `activate` 原本把"注册表已写成功"误报成 `channel_unavailable` 失败。改成 best-effort reload + `{reloaded, needsRestart, note}` 如实上报（commit `0c105ac`），README/SKILL 同步。
+
+**Step 8 的 `proxy_core_stop` 原本会撤销用户刚做的订阅切换**：`stop()` 回滚整个 `DEFAULT_BACKUP_NAMES = ['verge.yaml','profiles.yaml']`，而 `profiles.yaml` 是持久用户数据。收窄到 `SESSION_RESTORE_NAMES = ['verge.yaml']`（同上 commit `0c105ac`），测试断言 `restoredList` 只有 verge.yaml 且 `current` 保住。
+
+**Step 7 的备份排序是错的**：`listBackups`/`latestBackupIn` 按文件名字典序取"最新"，而目录里混着两种时间戳格式（`20260930-123930-488-001` 与 `20260930130959726-001`），字典序会挑到过期那份，`restore` 就退回更老状态。改按 `mtimeMs` 排、名字作 tiebreak（commit `29196d1`），测试用 `utimesSync` 钉 mtime 复现。
+
+**Step 8 的一条命令在 Git Bash 下跑不通**：`cmd //c "reg query … //v ProxyEnable"` 的参数被 MSYS 转换搅坏，`reg.exe` 报"无效语法/无效参数"（GBK 乱码输出），失败会被 `|| echo "系统代理关闭"` 吞成假绿。改用 `execFileSync('reg', ['query', <key>, '/v', <value>])` 的独立探针（scratch `qvp-reg.js`），实测 `ProxyEnable = 0x0`。**下一个人别照抄那条 cmd 命令。**
+
+**Step 2 的一个默认值偏紧（未改，记在这里）**：`proxy_test` 首轮 0/15，因为冷核心第一次拨号超过默认 `timeout: 5000`；同一批节点把 timeout 放到 8000 立刻通过。测速语义敏感，没动默认值 —— 冷启动第一次测速建议显式传 `timeout: 8000`。
+
+**Step 6 顺手补了文档侧的凭据泄露**：spec §2 的事实表原本写了完整的旧/新订阅 URL 路径段，已换成 `<旧订阅路径>` / `<新订阅路径>`。计划里的凭据 grep 命令仍保留 token/路径的 8 字符前缀，因为它们是搜索词本身，换成占位符会让验证命令失去可复现性。
+
+**Step 10 的范围比计划多了一点**：除验收文档外，同时把 spec §8 的 6 条"未验证项"逐条改成实测结论，并新增 `probes/03-plugin-install.md`（`@local` 安装的三处写入、备份路径、以及重启失败时的退路）。
 
 ## 依赖顺序（执行时不可打乱）
 

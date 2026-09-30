@@ -42,8 +42,8 @@
 | 直连基线（首轮，本日早间） | `github.com` 12s 超时；`google.com` 12s 超时；订阅站 2.1s 返回 200 | curl |
 | 直连基线（Task 14 落地时复测） | `github.com` 3/3 直连 200（connect 0.09s、total 0.76–0.84s、ip 20.205.243.166）、`raw.githubusercontent.com` 3/3 直连 200（total 0.40s、ip 185.199.108.133）；npm registry / PyPI / qoder.com 亦直连 200。复测时 `--noproxy '*'`、无任何代理环境变量、mihomo 端口 7897/7898/7899/9097 全部未监听、无 TUN 网卡，且对端为真实 GitHub/Fastly IP —— 即这轮"直连"没有被任何隐藏路径污染 | curl + `server/diagnose.js` |
 | 订阅 UA 门控 | UA=`clash-verge/v2.3.0` → 完整 YAML 28648B + `subscription-userinfo` + `content-disposition: 南山云`；UA=普通 curl → 仅 base64 节点串 5764B | 三组 UA 对比实测 |
-| 已导入订阅 | profile `Rq14DVii2DNo`「南山云」，url 路径 `SUBPATH`，当前选中 `TW 2 \| v4`，用量 upload 359MB / download 53.6GB / total 64.4GB | `profiles.yaml` |
-| 用户提供的新订阅 | `https://sub.example.invalid/SUBPATH?token=<同 token>`，userinfo 显示 total=74826208722 | curl 实测 |
+| 已导入订阅 | profile `Rq14DVii2DNo`「南山云」，url 路径 `<旧订阅路径>`，当前选中 `TW 2 \| v4`，用量 upload 359MB / download 53.6GB / total 64.4GB | `profiles.yaml` |
+| 用户提供的新订阅 | `https://<订阅站>/<新订阅路径>?token=<同 token>`，userinfo 显示 total=74826208722 | curl 实测 |
 | 运行时 | Node v22.23.3、npm 10.9.9 可用；Python 为 Store stub 不可用；PowerShell ConstrainedLanguage | 版本探测 |
 | Qoder 插件格式 | `.qoder-plugin/plugin.json` 清单 + `mcp.json` 声明 **stdio 型本地 MCP server**（`{"command":"npx","args":[...]}` 已验证可行） | 读取 playwright / chrome-devtools 已装插件 |
 | 会话环境变量注入 | `~/.qoder/session-env/<会话UUID>/sessionstart-hook-N.sh` 机制存在（本会话可见空文件） | 目录列举 |
@@ -275,11 +275,20 @@ Transport = {
 10. 安装注册：拷入 `~/.qoder/plugins/cache/local/qoder-vpn-proxy/0.1.0`，更新 `installed_plugins_v2.json` 与 `settings.json` 的 `enabledPlugins`。
 11. 真实 E2E 与 §6 验收，并把「南山云」的订阅链接按第 2 节说明更新为新地址。
 
-## 8. 未验证项（实现时须标注）
+## 8. 未验证项 → 实测结论
 
-- Qoder 桌面端自身的模型请求是否读取 WinINET 系统代理。**不确定**，由 `proxy_diagnose` 在实测后给出结论。
-- 命名管道的 mihomo HTTP 支持程度（§7.0 给出结论；若不支持则默认通道改为 TCP，需用户确认开启外部控制）。
-- `PreToolUse` 是否支持 `updatedInput`（§7.1）。不支持则接受"依赖 agent 遵循提示 + 工具级持久配置"的组合。
-- 新订阅链接（`SUBPATH`）返回的节点集合与旧 profile 是否一致，更新后需对比节点数。
-- CVR 运行时对 `profiles.yaml` 的回写是否会覆盖插件写入（§4 的写后校验会给出结论）。
-- 注意：`~/.npmrc` 与 git 全局配置属用户级持久改动，虽可还原，仍需 `proxy_toolconfig` 的 `status` 与备份文件作为审计依据。
+真机验收记录在 `docs/superpowers/verification/2026-09-30-acceptance.md`；探针细节在 `docs/superpowers/probes/01-named-pipe.md`、`02-hooks.md`。
+
+- ~~Qoder 桌面端自身的模型请求是否读取 WinINET 系统代理~~ → **仍未端到端证明，但设计上不需要**：`proxy_diagnose` 实测 `Qoder 直连 540ms / 经代理 3622ms`，直连更快，所以插件默认就让 Qoder 走直连；全程 `ProxyEnable=0` 时 WinINET 分支根本不被读。**"要不要让 Qoder 的模型请求走代理"是未回答的产品问题**，验证它需要临时打开系统代理（违反本设计前提），必须另行取得用户同意。
+- ~~命名管道的 mihomo HTTP 支持程度~~ → **完全够用，默认通道即管道**（mihomo v1.19.25，`enable_external_controller:false`）。`GET /version`、`GET /configs`、`GET /proxies`、`PATCH /configs`、`GET /delay`、`PUT /proxies/{name}` 全部可用；TCP 兜底保留但从未需要。两个副作用级发现：真机上 **`PUT /configs` 回 204 却不改状态**（必须 `PATCH`），且 **没有 `POST /configs/reload`（404）** —— 订阅切换后要靠重启核心才加载新节点。
+- ~~`PreToolUse` 是否支持 `updatedInput`~~ → **不支持**。hook stdout 契约只有 `decision`/`reason`/`additionalContext`；二进制里的 `updatedInput` 属 SDK permission-response 通路。按原计划接受"提示 + 工具级持久配置"组合。附带结论：hook 子进程的环境变量随进程消失，**无法**给 Bash 工具注入 `http_proxy`。
+- ~~新订阅链接返回的节点集合与旧 profile 是否一致~~ → **一致**：新条目 15 个业务节点，4 个策略组（GLOBAL 20 / 南山云 17 / 故障转移 15 / 自动选择 15）成员未变；quota 读回 total=74826208722。换链接是纯地址变更，不是套餐变更。
+- ~~CVR 运行时对 `profiles.yaml` 的回写是否会覆盖插件写入~~ → **会重写，但没覆盖掉插件的改动**：全程未触发 `profile_registry_desync`，§4 的写后重读校验均通过，"先停核心再改订阅"的备用路径没被需要。旁证：CVR 在停核心前一刻自己重写了 `clash-verge.yaml`（插件从不写该文件）。
+- `~/.npmrc` 与 git 全局配置属用户级持久改动 → **已按此执行并闭环**：apply 前留时间戳备份，`status` 回 `verdict:'clean'`，revert 后 `~/.gitconfig` 回到 0 字节、`~/.npmrc` 回到"不存在"（即基线态）。
+
+仍未验证 / 未闭环：
+
+- `@local` 插件 source 能否被 Qoder 加载、17 个工具在重启后是否可见、SessionStart hook 是否真的只在 CVR 运行时注入 —— 三条都要重启 Qoder 才能看，见验收文档 §验收 4 / §验收 9。
+- 插件的 `backups/profiles.yaml.*` 必然含原始订阅 token（那是 CVR 工作文件的逐字节副本），目前无保留期策略。
+- CVR 自己写入的注册表值 `ProxyServer`/`ProxyOverride`（基线里没有）仍留在机器上；因 `ProxyEnable=0` 而惰性，清除它需要用户同意。
+
