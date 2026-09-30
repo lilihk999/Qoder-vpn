@@ -2702,10 +2702,10 @@ git commit -m "feat: cvr-config 备份/压制系统代理/启停 CVR(失败即�
 **Interfaces:**
 - Consumes: `ApiError` (Task 3)、fixture `test/fixtures/cvr-profiles.yaml` (Task 8)
 - Produces:
-  - `parse(text) -> {headLines, blocks:[{uid, lines}], tailLines, eol}`
+  - `parse(text) -> {headLines, blocks:[{uid, lines}], tailLines, eol, hasItems, finalNewline}`（`finalNewline` 是"文件以换行结尾"的标记，内容行里不留尾随空行）
   - `render(model) -> string`
-  - `readField(lines, key) -> string|null`、`readNested(lines, [parent, key]) -> string|null`
-  - `getItem(text, uid) -> {uid, type, name, file, url, updated}|null`
+  - `readField(lines, key) -> string|null`、`readNested(lines, parent, key) -> string|null`（`null` 与裸空串都读成 `null`）
+  - `getItem(text, uid) -> {uid, type, name, file, url, updated, selected?}|null`
   - `listItems(text) -> [{uid, type, name, file, url, updated, extra, option}]`
   - `setCurrent(text, uid) -> string`
   - `setField(text, uid, key, value) -> string`（key ∈ 单层标量字段；缺失则在块尾追加）
@@ -2741,7 +2741,7 @@ test('listItems 读出 8 项，字段与真实文件一致', () => {
   assert.equal(remote.type, 'remote');
   assert.equal(remote.name, '测试订阅');
   assert.equal(remote.file, 'TESTUIDd7225.yaml');
-  assert.match(remote.url, /^https:\/\/ping\.<needle-1>\.site\/SUBPATH\?token=TOKEN_PLACEHOLDER$/);
+  assert.equal(remote.url, 'https://panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER');
   assert.equal(remote.extra.download, '53636662825');
   assert.equal(remote.option.update_interval, '1440');
   assert.equal(remote.option.allow_auto_update, 'true');
@@ -2819,6 +2819,7 @@ test('removeItem 只删目标块', () => {
   assert.equal(items.length, 7);
   assert.ok(!items.some((i) => i.uid === 'TESTUIDd7225'));
   assert.equal(items.find((i) => i.uid === 'TESTUIDc197f').type, 'groups', '最后一块的其他项完好');
+  assert.ok(out.endsWith('\n'), '删掉末块也要保留文件末尾换行，CVR 自己的写法就是这样');
   assert.throws(() => P.removeItem(RAW, 'NOPE'), (e) => e.kind === 'subscription_not_found');
 });
 
@@ -2831,9 +2832,15 @@ test('yamlScalar 处理 null、数字与含冒号的字符串', () => {
   assert.equal(P.yamlScalar(null), 'null');
   assert.equal(P.yamlScalar(7), '7');
   assert.equal(P.yamlScalar(true), 'true');
-  assert.equal(P.yamlScalar('示例机场'), '示例机场');
-  assert.equal(P.yamlScalar('HK 3 | v4'), '"HK 3 | v4"');
+  assert.equal(P.yamlScalar('测试订阅'), '测试订阅');
+  // 竖线只有在行首才是 YAML 指示符；CVR 自己写的是 `now: TW 2 | v4`，加引号就变了它的风格
+  assert.equal(P.yamlScalar('HK 3 | v4'), 'HK 3 | v4');
+  assert.equal(P.yamlScalar('|leading'), '"|leading"');
   assert.equal(P.yamlScalar('a: b'), '"a: b"');
+  assert.equal(P.yamlScalar('https://x.test/sub?token=t'), 'https://x.test/sub?token=t');
+  // readNested 交回来的是字符串，读改写若给数字加引号，CVR 的 serde 会在 u64/bool 字段上反序列化失败
+  assert.equal(P.yamlScalar('1234'), '1234');
+  assert.equal(P.yamlScalar(''), '""');
 });
 ```
 
@@ -2850,55 +2857,105 @@ Expected: FAIL，`Cannot find module '../server/profilesYaml'`
 'use strict';
 const { ApiError } = require('./envelope');
 
-const NEEDS_QUOTE = /[:#&*!|>'"%@`{}[\]]|^\s|\s$/;
+/**
+ * profiles.yaml 归 CVR 所有，插件只动该动的字节，所以这里不用 YAML 库做全量
+ * parse+stringify（那会丢掉 CVR 的格式习惯）。唯一的不变量是 render(parse(x)) === x。
+ */
+
+const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** CVR 把每项的第一个字段写在破折号同一行，其余字段缩进两空格 */
+function fieldRe(key) {
+  return new RegExp(`^(?:  |- )${esc(key)}:[ \\t]*(.*)$`);
+}
+
+function needsQuote(s) {
+  if (s === '') return true;
+  if (/^[-?:,[\]{}#&*!|>'"%@`]/.test(s)) return true; // 行首指示符
+  if (/:(\s|$)/.test(s)) return true; // 冒号后跟空格才是键值分隔，URL 里的 :// 不算
+  if (/\s#/.test(s)) return true;
+  if (/["\\\t]/.test(s)) return true;
+  if (/^\s|\s$/.test(s)) return true;
+  // 纯数字/true/false 一律裸写：readNested 交回来的是字符串，读改写时给它们加引号
+  // 会让 CVR 在 u64/bool 字段上反序列化失败，而 CVR 自己写的就是裸值。
+  return false;
+}
 
 function yamlScalar(value) {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   const s = String(value);
-  if (s === '') return '""';
-  if (NEEDS_QUOTE.test(s) || /^\d+$/.test(s)) return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-  return s;
+  if (!needsQuote(s)) return s;
+  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function stripQuotes(v) {
+  const t = String(v).trim();
+  if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
+    try { return JSON.parse(t); } catch { return t.slice(1, -1); }
+  }
+  return t;
+}
+
+function readValue(raw) {
+  if (raw === null || raw === undefined) return null;
+  const v = stripQuotes(raw);
+  return v === 'null' || v === '' ? null : v;
 }
 
 function parse(text) {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  // 文件末尾的换行在 split 后表现为最后一个空串元素。把它单独记成 finalNewline，
+  // 块内就只剩内容行，不必再猜"这个空行属于哪个块"。
+  const finalNewline = text.endsWith('\n');
   const lines = text.split(/\r?\n/);
-  const start = lines.findIndex((l) => /^items:\s*$/.test(l));
-  if (start === -1) return { headLines: lines, blocks: [], tailLines: [], eol, hasItems: false };
+  if (finalNewline) lines.pop();
+
+  const start = lines.findIndex((l) => /^items:[ \t]*$/.test(l));
+  if (start === -1) {
+    return { headLines: lines, blocks: [], tailLines: [], eol, hasItems: false, finalNewline };
+  }
 
   const headLines = lines.slice(0, start + 1);
   const blocks = [];
-  let cur = null;
   const tailLines = [];
+  let cur = null;
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i];
-    if (/^- /.test(line)) { cur = { lines: [line] }; blocks.push(cur); continue; }
-    if (cur && (/^[ \t]+/.test(line) || line === '')) { cur.lines.push(line); continue; }
+    if (/^- \S/.test(line)) { cur = { lines: [line] }; blocks.push(cur); continue; }
+    if (cur && (line === '' || /^[ \t]+\S/.test(line))) { cur.lines.push(line); continue; }
     cur = null;
     tailLines.push(line);
   }
-  // 每个块内可能有尾随空行属于下一块之前的间隔；统一按 uid 归位
-  const withUid = blocks.map((b) => {
-    const m = /^- uid:[ \t]*(.*)$/.exec(b.lines[0]);
-    return { uid: m ? m[1].trim() : null, lines: b.lines };
-  });
-  return { headLines, blocks: withUid, tailLines, eol, hasItems: true };
+  return {
+    headLines,
+    blocks: blocks.map((b) => {
+      const m = fieldRe('uid').exec(b.lines[0]);
+      return { uid: m ? stripQuotes(m[1]) : null, lines: b.lines };
+    }),
+    tailLines,
+    eol,
+    hasItems: true,
+    finalNewline,
+  };
 }
 
 function render(model) {
-  if (!model.hasItems) return model.headLines.join(model.eol);
   const lines = [...model.headLines];
-  for (const b of model.blocks) lines.push(...b.lines);
-  lines.push(...model.tailLines);
-  return lines.join(model.eol);
+  if (model.hasItems) {
+    for (const b of model.blocks) lines.push(...b.lines);
+    lines.push(...model.tailLines);
+  } else {
+    lines.push(...model.tailLines);
+  }
+  return lines.join(model.eol) + (model.finalNewline === false ? '' : model.eol);
 }
 
-function uidRe(key) { return new RegExp(`^- uid:[ \\t]*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`); }
-
 function findBlock(model, uid, { required = true } = {}) {
-  const hits = model.blocks.filter((b) => uidRe(uid).test(b.lines[0]));
-  if (hits.length > 1) throw new ApiError('malformed_config', `profiles.yaml 中 uid ${uid} 出现 ${hits.length} 次`, 'CVR 注册表异常，需手工确认后重试');
+  const hits = model.blocks.filter((b) => b.uid === uid);
+  if (hits.length > 1) {
+    throw new ApiError('malformed_config', `profiles.yaml 中 uid ${uid} 出现 ${hits.length} 次`, 'CVR 注册表异常，需手工确认后重试');
+  }
   if (!hits.length) {
     if (required) throw new ApiError('subscription_not_found', `profiles.yaml 中没有 uid ${uid}`, '用 proxy_subscriptions 查看现有订阅');
     return null;
@@ -2906,102 +2963,100 @@ function findBlock(model, uid, { required = true } = {}) {
   return hits[0];
 }
 
-function stripQuotes(v) {
-  const t = v.trim();
-  if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
-    try { return JSON.parse(t); } catch { return t.slice(1, -1); }
-  }
-  return t;
-}
-
 function readField(lines, key) {
-  const re = new RegExp(`^(?:- )?  ?${key}:[ \\t]*(.*)$`);
+  const re = fieldRe(key);
   const hit = lines.find((l) => re.test(l));
-  if (hit === undefined) return null;
-  const v = stripQuotes(re.exec(hit)[1]);
-  return v === 'null' ? null : v;
+  return hit === undefined ? null : readValue(re.exec(hit)[1]);
 }
 
 function readNested(lines, parent, key) {
-  const pIdx = lines.findIndex((l) => new RegExp(`^  ${parent}:[ \\t]*$`).test(l));
+  const pIdx = lines.findIndex((l) => new RegExp(`^  ${esc(parent)}:[ \\t]*$`).test(l));
   if (pIdx === -1) return null;
-  const re = new RegExp(`^    ${key}:[ \\t]*(.*)$`);
-  for (let i = pIdx + 1; i < lines.length; i += 1) {
-    if (!/^[ \t]{4,}/.test(lines[i])) break;
-    if (re.test(lines[i])) { const v = stripQuotes(re.exec(lines[i])[1]); return v === 'null' ? null : v; }
+  const { end } = childRange(lines, pIdx);
+  const re = new RegExp(`^    ${esc(key)}:[ \\t]*(.*)$`);
+  for (let i = pIdx + 1; i < end; i += 1) {
+    if (re.test(lines[i])) return readValue(re.exec(lines[i])[1]);
   }
   return null;
 }
 
+/** 父键行 [start, end) 覆盖的子行区间；缩进 4 空格或 2 空格短横线的行属于它 */
+function childRange(lines, start) {
+  let end = start + 1;
+  while (end < lines.length) {
+    const l = lines[end];
+    if (l === '' || /^[ \t]{4,}\S/.test(l) || /^  - \S/.test(l)) { end += 1; continue; }
+    break;
+  }
+  while (end - 1 > start && lines[end - 1] === '') end -= 1;
+  return { start, end };
+}
+
 function itemOf(lines) {
   return {
-    uid: readField(lines, 'uid'), type: readField(lines, 'type'), name: readField(lines, 'name'),
-    file: readField(lines, 'file'), url: readField(lines, 'url'), updated: readField(lines, 'updated'),
+    uid: readField(lines, 'uid'),
+    type: readField(lines, 'type'),
+    name: readField(lines, 'name'),
+    file: readField(lines, 'file'),
+    url: readField(lines, 'url'),
+    updated: readField(lines, 'updated'),
+    selected: (() => {
+      const name = readSelectedName(lines);
+      return name === null ? undefined : { name, now: readField(lines, 'now') };
+    })(),
     extra: ['upload', 'download', 'total', 'expire'].reduce((a, k) => ({ ...a, [k]: readNested(lines, 'extra', k) }), {}),
     option: ['update_interval', 'allow_auto_update', 'merge', 'script', 'rules', 'proxies', 'groups']
       .reduce((a, k) => ({ ...a, [k]: readNested(lines, 'option', k) }), {}),
   };
 }
 
-/** 找到属于某个 2 空格键的子行区间 [start, end)；start 为该键行，end 为下一同级键 */
-function childRange(lines, keyLine) {
-  const start = lines.indexOf(keyLine);
-  if (start === -1) return { start: -1, end: -1 };
-  let end = start + 1;
-  while (end < lines.length) {
-    const l = lines[end];
-    if (l === '' ) { end += 1; continue; }
-    if (/^[ \t]{4,}/.test(l) || /^  - /.test(l) || (/^[ \t]{2}\S/.test(l) && /^[ \t]{2}- /.test(l))) { end += 1; continue; }
-    break;
-  }
-  // 去掉尾随空行，它们属于块间间隔
-  while (end - 1 > start && lines[end - 1] === '') end -= 1;
-  return { start, end };
+function readSelectedName(lines) {
+  const pIdx = lines.findIndex((l) => /^  selected:[ \t]*$/.test(l));
+  if (pIdx === -1) return null;
+  const { end } = childRange(lines, pIdx);
+  const re = /^  - name:[ \t]*(.*)$/;
+  for (let i = pIdx + 1; i < end; i += 1) if (re.test(lines[i])) return readValue(re.exec(lines[i])[1]);
+  return null;
 }
 
 function setCurrent(text, uid) {
   const model = parse(text);
   findBlock(model, uid);
-  return render({ ...model, headLines: model.headLines.map((l) => (/^current:/.test(l) ? `current: ${uid}` : l)) });
+  return render({
+    ...model,
+    headLines: model.headLines.map((l) => (/^current:[ \t]*(.*)$/.test(l) ? `current: ${uid}` : l)),
+  });
 }
 
 function setField(text, uid, key, value) {
   const model = parse(text);
   const block = findBlock(model, uid);
-  const re = new RegExp(`^(?:- )?  ?${key}:[ \\t]*(.*)$`);
-  const line = `${' '.repeat(key === 'uid' ? 2 : 2)}${key}: ${yamlScalar(value)}`;
-  const dashForm = `- ${key}: ${yamlScalar(value)}`;
-  const idx = block.lines.findIndex((l) => re.test(l));
+  const re = fieldRe(key);
   const next = [...block.lines];
-  if (idx === -1) {
-    // 插到块尾（去掉尾随空行后），保持 YAML 语义
-    let insertAt = next.length;
-    while (insertAt > 1 && next[insertAt - 1] === '') insertAt -= 1;
-    next.splice(insertAt, 0, key === 'uid' ? dashForm : line);
-  } else {
-    next[idx] = next[idx].startsWith('- ') ? dashForm : line;
-  }
-  return render({ ...model, blocks: model.blocks.map((b) => (b === block ? { ...b, lines: next } : b)) });
+  const idx = next.findIndex((l) => re.test(l));
+  const dashForm = `- ${key}: ${yamlScalar(value)}`;
+  const line = `  ${key}: ${yamlScalar(value)}`;
+  if (idx === -1) next.push(key === 'uid' ? dashForm : line);
+  else next[idx] = next[idx].startsWith('- ') ? dashForm : line;
+  return replaceBlock(model, block, next);
 }
 
 function setNested(text, uid, parent, key, value) {
   const model = parse(text);
   const block = findBlock(model, uid);
   const lines = [...block.lines];
-  const parentLine = lines.find((l) => new RegExp(`^  ${parent}:[ \\t]*$`).test(l));
-  const childRe = new RegExp(`^    ${key}:[ \\t]*(.*)$`);
-
-  if (parentLine === undefined) {
-    let insertAt = lines.length;
-    while (insertAt > 1 && lines[insertAt - 1] === '') insertAt -= 1;
-    lines.splice(insertAt, 0, `  ${parent}:`, `    ${key}: ${yamlScalar(value)}`);
+  const pIdx = lines.findIndex((l) => new RegExp(`^  ${esc(parent)}:[ \\t]*$`).test(l));
+  const childLine = `    ${key}: ${yamlScalar(value)}`;
+  if (pIdx === -1) {
+    lines.push(`  ${parent}:`, childLine);
   } else {
-    const { start, end } = childRange(lines, parentLine);
-    const hit = lines.findIndex((l, i) => i > start && i < end && childRe.test(l));
-    if (hit === -1) lines.splice(end, 0, `    ${key}: ${yamlScalar(value)}`);
-    else lines[hit] = `    ${key}: ${yamlScalar(value)}`;
+    const { end } = childRange(lines, pIdx);
+    const re = new RegExp(`^    ${esc(key)}:[ \\t]*(.*)$`);
+    const hit = lines.findIndex((l, i) => i > pIdx && i < end && re.test(l));
+    if (hit === -1) lines.splice(end, 0, childLine);
+    else lines[hit] = childLine;
   }
-  return render({ ...model, blocks: model.blocks.map((b) => (b === block ? { ...b, lines } : b)) });
+  return replaceBlock(model, block, lines);
 }
 
 function setSelected(text, uid, { name, now }) {
@@ -3009,69 +3064,55 @@ function setSelected(text, uid, { name, now }) {
   const block = findBlock(model, uid);
   const lines = [...block.lines];
   const replacement = ['  selected:', `  - name: ${yamlScalar(name)}`, `    now: ${yamlScalar(now)}`];
-  const parentLine = lines.find((l) => /^  selected:[ \t]*$/.test(l));
-  if (parentLine === undefined) {
-    let insertAt = lines.length;
-    while (insertAt > 1 && lines[insertAt - 1] === '') insertAt -= 1;
-    lines.splice(insertAt, 0, ...replacement);
-  } else {
-    const { start, end } = childRange(lines, parentLine);
-    lines.splice(start, end - start + 1, ...replacement);
+  const pIdx = lines.findIndex((l) => /^  selected:[ \t]*$/.test(l));
+  if (pIdx === -1) lines.push(...replacement);
+  else {
+    const { end } = childRange(lines, pIdx);
+    lines.splice(pIdx, end - pIdx, ...replacement);
   }
-  return render({ ...model, blocks: model.blocks.map((b) => (b === block ? { ...b, lines } : b)) });
+  return replaceBlock(model, block, lines);
 }
 
-function itemToLines(item, eol) {
+function itemToLines(item) {
   const lines = [
     `- uid: ${yamlScalar(item.uid)}`,
     `  type: ${yamlScalar(item.type || 'remote')}`,
     `  name: ${yamlScalar(item.name ?? null)}`,
     `  file: ${yamlScalar(item.file)}`,
   ];
-  if (item.url !== undefined) lines.push(`  url: ${yamlScalar(item.url)}`);
-  if (item.selected) lines.push('  selected:', `  - name: ${yamlScalar(item.selected.name)}`, `    now: ${yamlScalar(item.selected.now)}`);
-  if (item.extra) { lines.push('  extra:'); for (const [k, v] of Object.entries(item.extra)) lines.push(`    ${k}: ${yamlScalar(v)}`); }
+  if (item.url !== undefined && item.url !== null) lines.push(`  url: ${yamlScalar(item.url)}`);
+  if (item.selected) {
+    lines.push('  selected:', `  - name: ${yamlScalar(item.selected.name)}`, `    now: ${yamlScalar(item.selected.now)}`);
+  }
+  if (item.extra) {
+    lines.push('  extra:');
+    for (const [k, v] of Object.entries(item.extra)) lines.push(`    ${k}: ${yamlScalar(v)}`);
+  }
   lines.push(`  updated: ${yamlScalar(item.updated)}`);
-  if (item.option) { lines.push('  option:'); for (const [k, v] of Object.entries(item.option)) lines.push(`    ${k}: ${yamlScalar(v)}`); }
+  if (item.option) {
+    lines.push('  option:');
+    for (const [k, v] of Object.entries(item.option)) lines.push(`    ${k}: ${yamlScalar(v)}`);
+  }
   return lines;
 }
 
 function appendItem(text, item) {
   const model = parse(text);
-  if (!model.hasItems) throw new ApiError('malformed_config', 'profiles.yaml 中没有 items: 段，无法追加', '该文件形态异常，先用 proxy_restore_config 还原备份');
-  if (findBlock(model, item.uid, { required: false })) throw new ApiError('malformed_config', `uid ${item.uid} 已存在`, '重新生成 uid 后再试');
-
-  const lines = [...model.headLines];
-  for (const b of model.blocks) lines.push(...b.lines);
-  const bodyEnd = lines.length;
-  // 尾随空行属于文件末尾，新块插在它之前
-  let insertAt = bodyEnd;
-  while (insertAt > lines.length - model.tailLines.length && lines[insertAt - 1] === '' && model.tailLines.length > 0) insertAt -= 1;
-  const extra = lines.slice(insertAt);
-  const before = lines.slice(0, insertAt);
-  const blockLines = itemToLines(item, model.eol);
-  const headBlock = model.blocks[model.blocks.length - 1];
-  const needsBlank = headBlock && headBlock.lines[headBlock.lines.length - 1] !== '';
-  const merged = [...before, ...(needsBlank ? [''] : []), ...blockLines, ...extra];
-  return render({ headLines: model.headLines, blocks: parse(render({ ...model, blocks: [], tailLines: merged.slice(model.headLines.length) })).blocks.map((b, i, arr) => b), tailLines: [], eol: model.eol, hasItems: true })
-    .replace(/^\s*$/, '') === '' ? merged.join(model.eol) : merged.join(model.eol);
+  if (!model.hasItems) {
+    throw new ApiError('malformed_config', 'profiles.yaml 中没有 items: 段，无法追加', '该文件形态异常，先用 proxy_restore_config 还原备份');
+  }
+  if (findBlock(model, item.uid, { required: false })) {
+    throw new ApiError('malformed_config', `uid ${item.uid} 已存在`, '重新生成 uid 后再试');
+  }
+  const blocks = [...model.blocks.map((b) => ({ ...b })), { uid: item.uid, lines: itemToLines(item) }];
+  return render({ ...model, blocks });
 }
 
 function removeItem(text, uid) {
   const model = parse(text);
   const block = findBlock(model, uid);
-  const kept = [];
-  for (const b of model.blocks) {
-    if (b === block) continue;
-    const trimmed = [...b.lines];
-    while (trimmed.length > 1 && trimmed[trimmed.length - 1] === '') trimmed.pop();
-    kept.push({ uid: b.uid, lines: trimmed });
-  }
-  const last = kept[kept.length - 1];
-  const tail = last ? [...last.lines, '', ...model.tailLines] : [...model.headLines.length ? [''] : [], ...model.tailLines];
-  if (last) kept[kept.length - 1] = { uid: last.uid, lines: [...last.lines, '', ...model.tailLines] };
-  void tail;
-  return render({ ...model, blocks: kept });
+  const blocks = model.blocks.filter((b) => b !== block).map((b) => ({ ...b }));
+  return render({ ...model, blocks });
 }
 
 function getItem(text, uid) {
@@ -3084,56 +3125,47 @@ function listItems(text) {
   return parse(text).blocks.map((b) => itemOf(b.lines));
 }
 
-module.exports = { parse, render, readField, readNested, yamlScalar, setCurrent, setField, setNested, setSelected, appendItem, removeItem, getItem, listItems, itemToLines };
+function replaceBlock(model, block, lines) {
+  return render({ ...model, blocks: model.blocks.map((b) => (b === block ? { ...b, lines } : b)) });
+}
+
+module.exports = {
+  parse, render, readField, readNested, yamlScalar, setCurrent, setField, setNested,
+  setSelected, appendItem, removeItem, getItem, listItems, itemToLines,
+};
 ```
 
 - [ ] **Step 4: 用"round-trip 恒等"驱动实现收敛（这一步不是可选的）**
 
-`appendItem` 与 `removeItem` 上面的实现写得绕，是因为空行归属容易出错。**不要保留这段绕的写法**：按下面这条规则重写这两个函数，直到 12 条测试全绿 ——
+空行归属是这一层最容易出错的地方。最终模型只有一条不变量：**`render(parse(x)) === x`**。为此实现把"文件以换行结尾"从内容里剥出来单独记账，而不是让空行在块之间找主人 ——
 
-> 模型只有一个不变量：`render(parse(x)) === x`。空行属于**它前面的那个块**的尾部，`tailLines` 只放非空行的顶层内容与文件末行空串。
+> `parse` 先 `pop()` 掉 `split(/\r?\n/)` 产生的末空串元素，存成 `model.finalNewline`；`render` 末尾再补回 `eol`。块内因此只剩内容行。块与块之间不插空行：真实 fixture 的 8 项就是紧挨着写的，追加项也必须紧挨着。
 
-```js
-function appendItem(text, item) {
-  const model = parse(text);
-  if (!model.hasItems) throw new ApiError('malformed_config', 'profiles.yaml 中没有 items: 段，无法追加', '该文件形态异常，先用 proxy_restore_config 还原备份');
-  if (findBlock(model, item.uid, { required: false })) throw new ApiError('malformed_config', `uid ${item.uid} 已存在`, '重新生成 uid 后再试');
-  const blocks = model.blocks.map((b) => ({ ...b }));
-  const last = blocks[blocks.length - 1];
-  if (last) {
-    const trimmed = [...last.lines];
-    while (trimmed.length > 1 && trimmed[trimmed.length - 1] === '') trimmed.pop();
-    blocks[blocks.length - 1] = { ...last, lines: [...trimmed, model.eol === '\r\n' ? '' : ''] };
-  }
-  blocks.push({ uid: item.uid, lines: itemToLines(item, model.eol) });
-  return render({ ...model, blocks });
-}
+Step 3 的代码即最终形态（早期草稿里 `appendItem`/`removeItem` 各带一段"裁剪尾随空行"的循环，已随该模型删除）。落地时踩到、并被测试钉住的规则：
 
-function removeItem(text, uid) {
-  const model = parse(text);
-  const block = findBlock(model, uid);
-  const blocks = model.blocks.filter((b) => b !== block).map((b) => ({ ...b }));
-  const last = blocks[blocks.length - 1];
-  if (last) {
-    const trimmed = [...last.lines];
-    while (trimmed.length > 1 && trimmed[trimmed.length - 1] === '') trimmed.pop();
-    blocks[blocks.length - 1] = { ...last, lines: trimmed };
-  }
-  return render({ ...model, blocks });
-}
-```
+1. **`finalNewline` 标记**：删掉末块时若不记这个标记，输出会丢掉文件末行的换行；CVR 下次整文件写盘就会出现无谓的大 diff。`removeItem` 测试里的 `assert.ok(out.endsWith('\n'))` 钉的是这一点。
+2. **字段有两种书写形态**：CVR 把每项的第一个键写在短横线上（`- uid: Merge`），其余键缩进两空格。`fieldRe(key)` 只认 `^  key:` 与 `^- key:` 两种，因此 `readField(lines, 'name')` 不会误命中 `selected:` 子项的 `  - name: 测试订阅`；写入时按原形态（短横线/两空格）回填。
+3. **裸值优先**：`yamlScalar` 不给纯数字串与 `true`/`false` 加引号。`readNested` 交回的是字符串，读改写若写成 `updated: "1"`、`allow_auto_update: "true"`，CVR 的 serde 在 u64/bool 字段上会反序列化失败；需要写数字的调用方直接传 number。
+4. **只有行首指示符才算指示符**：`now: TW 2 | v4` 保持裸写（CVR 自己就这么写），竖线在行中不是 YAML 指示符。加引号的条件限定为：空串、行首指示符、`: ` 或结尾冒号、` #`、含引号/反斜杠/制表符、首尾空格。URL 里的 `://` 因此不会被误引号。
+5. **`itemOf` 也读 `selected`**：Task 12 换节点后要写回 `selected`，先读后写的往返需要它；父键缺失时 `setNested` 追加 `  parent:` + 4 空格子行，`setSelected` 用 `childRange` 整段替换，不会吞掉紧随其后的 `extra:`。
 
 Run: `node --test test/profilesYaml.test.js`
-Expected: PASS（12 个测试）。任一条 round-trip 断言失败时，先跑这段定位差异，不要改测试来迁就实现：
+
+Expected: PASS（12 个测试）。任一条 round-trip 断言失败时，先跑这段定位差异（覆盖 CRLF、无末行换行、链式编辑、删到只剩一项），不要改测试来迁就实现：
 
 ```bash
 node -e "
 const P=require('./server/profilesYaml');const fs=require('fs');
 const raw=fs.readFileSync('test/fixtures/cvr-profiles.yaml','utf8');
-for (const [n,f] of [['setCurrent',()=>P.setCurrent(raw,'Merge')],['append',()=>P.appendItem(raw,{uid:'Z1',type:'remote',name:'x',file:'Z1.yaml',url:'https://x.test/1?token=t',updated:1,option:{allow_auto_update:true}})],['remove',()=>P.removeItem(raw,'TESTUIDd7225')]]) {
-  const out=f(); const back=P.render(P.parse(out));
-  console.log(n, back===out ? 'IDENTITY-OK' : 'IDENTITY-BROKEN', '| blockcount', P.parse(out).blocks.length);
-}"
+const cases=[['identity',()=>raw],['setCurrent',()=>P.setCurrent(raw,'Merge')],
+ ['append',()=>P.appendItem(raw,{uid:'Z1',type:'remote',name:'x',file:'Z1.yaml',url:'https://x.test/1?token=t',updated:1,option:{allow_auto_update:true}})],
+ ['remove-last',()=>P.removeItem(raw,'TESTUIDd7225')],['remove-first',()=>P.removeItem(raw,'Merge')],
+ ['chained',()=>{let t=P.appendItem(raw,{uid:'Z2',type:'remote',name:'n',file:'Z2.yaml',url:'https://z.test/2',updated:2});t=P.setField(t,'Z2','name','第二家');t=P.setNested(t,'Z2','option','update_interval',1440);t=P.setSelected(t,'Z2',{name:'第二家',now:'TW 2 | v4'});return P.setCurrent(t,'Z2');}],
+ ['remove-all-but-one',()=>{let t=raw;for(const u of ['Merge','Script','TESTUID76f79','TESTUID691c2','TESTUID3d968','TESTUID4b266','TESTUIDd7225'])t=P.removeItem(t,u);return t;}]];
+for (const [n,f] of cases) { const out=f(); console.log(n.padEnd(20), P.render(P.parse(out))===out ? 'IDENTITY-OK' : 'IDENTITY-BROKEN', '| blocks', P.parse(out).blocks.length, '| endsNL', out.endsWith('\n')); }
+const crlf=raw.replace(/\n/g,'\r\n'); console.log('crlf', P.render(P.parse(crlf))===crlf ? 'IDENTITY-OK' : 'IDENTITY-BROKEN');
+const bare=raw.replace(/\n+$/,''); console.log('no-trailing-nl', P.render(P.parse(bare))===bare ? 'IDENTITY-OK' : 'IDENTITY-BROKEN');
+"
 ```
 
 - [ ] **Step 5: 全量测试与提交**
