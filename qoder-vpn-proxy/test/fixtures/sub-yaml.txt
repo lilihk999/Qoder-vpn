@@ -1,0 +1,38 @@
+mixed-port: 7890
+allow-lan: true
+bind-address: '*'
+mode: rule
+log-level: info
+external-controller: '127.0.0.1:9090'
+dns:
+    enable: true
+    ipv6: false
+    default-nameserver: [192.0.2.10, 192.0.2.11]
+    enhanced-mode: fake-ip
+    fake-ip-range: 198.18.0.1/16
+    use-hosts: true
+    respect-rules: true
+    proxy-server-nameserver: [192.0.2.10, 192.0.2.11]
+    nameserver: [192.0.2.10, 192.0.2.11]
+    fallback: [1.1.1.1, 8.8.8.8]
+    fallback-filter: { geoip: true, geoip-code: CN, geosite: [gfw], ipcidr: [240.0.0.0/4], domain: [+.google.com, +.facebook.com, +.youtube.com] }
+proxies:
+    - { name: 官网地址：, type: ss, server: 192.0.2.10, port: 53, cipher: chacha20-ietf-poly1305, password: REDACTED, udp: true }
+    - { name: 'https://panel.example.invalid', type: ss, server: 192.0.2.10, port: 53, cipher: chacha20-ietf-poly1305, password: REDACTED, udp: true }
+    - { name: 'HK 1 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'HK 2 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'TW 1 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'TW 1 | v6', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'TW 2 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'TW 2 | v6', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'JP 1 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'JP 1 | v6', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'JP 2 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'JP 2 | v6', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'US 1 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 'US 2 | v4', type: vless, server: 192.0.2.10, port: 443, uuid: REDACTED-UUID, udp: true, flow: xtls-rprx-vision, tls: true, skip-cert-verify: false, client-fingerprint: chrome, servername: example.invalid, reality-opts: { public-key: REDACTED-PUBKEY, short-id: REDACTED-SHORTID} }
+    - { name: 欢迎加群闲聊, type: ss, server: 192.0.2.10, port: 53, cipher: chacha20-ietf-poly1305, password: REDACTED, udp: true }
+proxy-groups:
+    - { name: 示例订阅, type: select, proxies: [自动选择, 故障转移, 官网地址：, 'https://panel.example.invalid', 'HK 1 | v4', 'HK 2 | v4', 'TW 1 | v4', 'TW 1 | v6', 'TW 2 | v4', 'TW 2 | v6', 'JP 1 | v4', 'JP 1 | v6', 'JP 2 | v4', 'JP 2 | v6', 'US 1 | v4', 'US 2 | v4', 欢迎加群闲聊] }
+    - { name: 自动选择, type: url-test, proxies: [官网地址：, 'https://panel.example.invalid', 'HK 1 | v4', 'HK 2 | v4', 'TW 1 | v4', 'TW 1 | v6', 'TW 2 | v4', 'TW 2 | v6', 'JP 1 | v4', 'JP 1 | v6', 'JP 2 | v4', 'JP 2 | v6', 'US 1 | v4', 'US 2 | v4', 欢迎加群闲聊], url: 'http://www.gstatic.com/generate_204', interval: 86400 }
+    - { name: 故障转移, type: fallback, proxies: [官网地址：, 'https://panel.example.invalid', 'HK 1 | v4', 'HK 2 | v4', 'TW 1 | v4', 'TW 1 | v6', 'TW 2 | v4', 'TW 2 | v6', 'JP 1 | v4', 'JP 1 | v6', 'JP 2 | v4', 'JP 2 | v6', 'US 1 | v4', 'US 2 | v4', 欢迎加群闲聊], url: 'http://www.gstatic.com/generate_204', interval: 7200 }
