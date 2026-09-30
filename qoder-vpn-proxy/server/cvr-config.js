@@ -10,6 +10,8 @@ const { createTransport } = require('./transport');
 const execFileAsync = promisify(childExecFile);
 const SUPPRESS_KEYS = ['enable_system_proxy', 'enable_proxy_guard'];
 const DEFAULT_BACKUP_NAMES = ['verge.yaml', 'profiles.yaml'];
+// stop() 只回滚会话级压制；profiles.yaml 属持久用户数据，还原它要用 proxy_restore_config
+const SESSION_RESTORE_NAMES = ['verge.yaml'];
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -230,7 +232,9 @@ class CvrConfig {
       if (await this.taskkill(image)) killed.push(image);
     }
     if (!restore) return { killed, restored: false };
-    const r = await this.restore(DEFAULT_BACKUP_NAMES);
+    // 只回滚会话级改动（系统代理压制 / 外部控制开关）。profiles.yaml 里的订阅切换与增删
+    // 是用户主动的持久意图，撤销它得靠 proxy_restore_config，不能藏在 stop 的副作用里。
+    const r = await this.restore(SESSION_RESTORE_NAMES);
     return { killed, restored: r.restored.length > 0, restoredList: r.restored };
   }
 
@@ -263,4 +267,4 @@ class CvrConfig {
   }
 }
 
-module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, ApiError, defaultWaitForChannel };
+module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, SESSION_RESTORE_NAMES, ApiError, defaultWaitForChannel };
