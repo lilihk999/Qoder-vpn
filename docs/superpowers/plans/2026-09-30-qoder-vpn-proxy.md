@@ -4836,23 +4836,23 @@ git commit -m "feat: diagnose 直连与经代理对比探测(含 --noproxy 隔�
 **一条 `proxy_status` 的例外约定**（spec §4 之外，写在这里避免实现时猜）：`proxy_status` 与 `proxy_detect` 是"报告状态"的工具，即使核心没跑也返回 `ok:true`，把不可达信息放进 `data.core = {reachable:false, kind, message, hint}`。其余 15 个工具在核心不可达时正常返回 `ok:false` + `core_not_running`/`channel_unavailable`。验收 4 的"关闭 CVR 后调用工具返回 core_not_running"针对后者。
 
 **Files:**
-- Create: `qoder-vpn-proxy/server/meta.js`（Step 2 给出内容 —— protocol.js 与 tools.js 都 `require('./meta')`，漏建会让两个模块在 require 阶段直接 `MODULE_NOT_FOUND`）
 - Create: `qoder-vpn-proxy/server/protocol.js`
 - Create: `qoder-vpn-proxy/server/tools.js`
 - Create: `qoder-vpn-proxy/server/index.js`
 - Test: `qoder-vpn-proxy/test/protocol.test.js`
 - Test: `qoder-vpn-proxy/test/tools.test.js`
+- Test: `qoder-vpn-proxy/test/index.test.js`（Step 7 给出内容：真起一个子进程跑 stdio，是 Step 8 冒烟的常驻版）
 
 **Interfaces:**
 - Consumes: 前面全部层
 - Produces:
-  - `PROTOCOL_VERSION = '2024-11-05'`、`SERVER_INFO = {name:'qoder-vpn-proxy', version:'0.1.0'}`
-  - `framer() -> {push(chunk: string|Buffer) -> object[], pending: boolean}`（换行分隔 JSON-RPC 帧，容忍跨 chunk 与单 chunk 多帧）
-  - `handleMessage(msg, {tools, log}) -> Promise<{jsonrpc:'2.0', id, result}|{jsonrpc,id,error}|null>`（notification 回 `null`）
+  - `PROTOCOL_VERSION = '2024-11-05'`、`SERVER_INFO = {name:'qoder-vpn-proxy', version:'0.1.0'}`（两个常量与 `INSTRUCTIONS` 都住在 `protocol.js` 里。**没有 `meta.js`** —— 计划草稿为"protocol 与 tools 都要用 SERVER_INFO"设了个常量文件，实际只有 protocol 用，为一个文件再开一层是纯开销；`TOOLS_MIN_COUNT` 一并删掉，工具数量由 `tools.js` 的 `TOOL_NAMES` 与 `test/tools.test.js` 的长度断言守住）
+  - `framer() -> {push(chunk: string|Buffer) -> object[]}`（换行分隔 JSON-RPC 帧，容忍跨 chunk 与单 chunk 多帧；草稿里的 `pending` 字段没人读，落地时去掉）
+  - `handleMessage(msg, {tools, callTool, log}) -> Promise<{jsonrpc:'2.0', id, result}|{jsonrpc,id,error}|null>`（notification 回 `null`）
   - `buildTools(deps) -> Tool[]`，`Tool = {name, description, inputSchema, handler}`
   - `callTool(name, args, deps) -> Promise<envelope>`（catch 一切异常 → `toEnvelope` → `redactText`）
-  - `main({argv?}) -> void`（index.js：绑定 stdin/stdout，日志只进文件与 stderr）
-  - `deps` 形状（测试注入用）：`{getRuntime, getClient, getRepo, getCvr, getToolConfig, getDiagnoseDeps, log, dispose}`。**只保留被真实消费的键** —— 端口一律从 `getRuntime()` 取，不要再加 `getEnvBlock`/`listBackups`/`now` 这类没人调的注入点。
+  - `main() -> void`（index.js：绑定 stdin/stdout，日志只进文件与 stderr；stdin 关闭后收完在途请求再退）
+  - `deps` 形状（测试注入用）：`{getRuntime, getClient, getRepo, getCvr, getToolConfig, getDiagnoseDeps, log}`。**只保留被真实消费的键** —— 端口一律从 `getRuntime()` 取，不要再加 `getEnvBlock`/`listBackups`/`now`/`dispose` 这类没人调的注入点。
 
 - [ ] **Step 1: 写 protocol 的失败测试**
 
@@ -4862,7 +4862,7 @@ git commit -m "feat: diagnose 直连与经代理对比探测(含 --noproxy 隔�
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { framer, handleMessage, PROTOCOL_VERSION, SERVER_INFO, TOOLS_MIN_COUNT } = require('../server/protocol');
+const { framer, handleMessage, PROTOCOL_VERSION, SERVER_INFO } = require('../server/protocol');
 
 const stubTools = [
   { name: 'proxy_status', description: '状态', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -4942,9 +4942,9 @@ test('handler 抛异常时回 -32603 而不是让服务端崩', async () => {
 
 ```js
 'use strict';
-const { SERVER_INFO, TOOLS_MIN_COUNT } = require('./meta');
 
 const PROTOCOL_VERSION = '2024-11-05';
+const SERVER_INFO = { name: 'qoder-vpn-proxy', version: '0.1.0' };
 
 const INSTRUCTIONS = [
   '本插件复用本机 Clash Verge Rev / mihomo 作为代理内核，只做识别、控制与诊断，不自己转发流量。',
@@ -5016,18 +5016,10 @@ async function handleMessage(msg, { tools, callTool, log = () => {} }) {
   }
 }
 
-module.exports = { PROTOCOL_VERSION, SERVER_INFO, TOOLS_MIN_COUNT, INSTRUCTIONS, framer, handleMessage };
+module.exports = { PROTOCOL_VERSION, SERVER_INFO, INSTRUCTIONS, framer, handleMessage };
 ```
 
-其中 `server/meta.js` 是一个只放常量的小文件（protocol 与 tools 都要用，避免循环依赖）：
-
-```js
-'use strict';
-module.exports = {
-  SERVER_INFO: { name: 'qoder-vpn-proxy', version: '0.1.0' },
-  TOOLS_MIN_COUNT: 17,
-};
-```
+草稿在这里还要求建 `server/meta.js`（`SERVER_INFO` + `TOOLS_MIN_COUNT` 两个常量）。**落地时没有这个文件**：`SERVER_INFO` 只有 `protocol.js` 自己用，`TOOLS_MIN_COUNT` 是"至少 17 个"这种含糊断言的来源，换成 `test/tools.test.js` 里对 `TOOL_NAMES.length` 的精确相等更硬。为两个常量单开一个模块、再让两个模块各 `require` 一次，是纯粹的间接层。
 
 - [ ] **Step 3: 跑 protocol 测试**
 
@@ -5046,6 +5038,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { buildTools, callTool, TOOL_NAMES } = require('../server/tools');
+const { ApiError } = require('../server/envelope');
 const { startFake } = require('./fake-mihomo');
 const { createTransport } = require('../server/transport');
 const { ClashClient } = require('../server/clash-client');
@@ -5060,8 +5053,15 @@ const RUNTIME = {
   secret: 'set-your-secret',
   settings: { enableExternalController: false, enableSystemProxy: false, enableTunMode: false, mixedPort: 7897, socksPort: 7898, httpPort: 7899, systemProxyBypass: null },
   profiles: { current: 'TESTUIDd7225', items: [{ uid: 'TESTUIDd7225', type: 'remote', name: '测试订阅', file: 'TESTUIDd7225.yaml', url: 'https://x.test/s?token=T', updated: 1 }] },
-  warnings: [], channelHint: 'hint',
+  warnings: [],
+  // 与 discovery.js 未安装分支的 channelHint 同源（discovery.test.js 断言它含"安装"）：
+  // 假 runtime 塞一个 'hint' 占位，下面"未安装要给安装指引"那条就只是在测占位符。
+  channelHint: '未检测到 Clash Verge Rev。请安装到默认目录 C:\\Program Files\\Clash Verge，或设置 QVP_INSTALL_DIR 指向安装目录、QVP_CONFIG_DIR 指向配置目录',
 };
+
+// 假件必须和真模块一样拒收非法 url：真 SubscriptionRepo.add 第一行就是 isUrl 校验，
+// 假件若来者不拒，"校验失败不能已经调过底层"这条测试就是在测一个不存在的实现。
+const httpUrl = (u) => /^https?:\/\/[^/?#\s]+\.[^/?#\s]/i.test(String(u || ''));
 
 function fakeDeps(over = {}) {
   const calls = [];
@@ -5071,21 +5071,33 @@ function fakeDeps(over = {}) {
     getProxies: async () => ({ groups: [{ name: '节点选择', type: 'Selector', now: 'HK 3 | v4', all: ['HK 3 | v4', 'JP 1 | v3', 'dead-node'], history: [] }], nodes: ['HK 3 | v4', 'JP 1 | v3', 'dead-node'] }),
     select: async (g, t) => ({ group: g, now: t }),
     setConfigs: async (p) => p,
-    delay: async (n) => { if (n === 'dead-node') { const e = new Error('dead'); e.kind = 'timeout'; throw e; } return n.length * 10; },
+    // 真 delay 在 HTTP 503 时抛 ApiError('timeout')，假件也必须抛 ApiError，
+    // 否则 proxy_test 里的 per-node kind 分类根本没被 exercised（只断言 ok:false 看不出来）。
+    delay: async (n) => { if (n === 'dead-node') throw new ApiError('timeout', '测速 dead-node 失败: HTTP 503', '该节点不可达或超时，可跳过它换下一个'); return n.length * 10; },
     reload: async () => ({ reloaded: true }),
     version: async () => ({ version: '1.19.0' }),
     close() {},
   };
   const repo = {
     list: async () => [{ uid: 'TESTUIDd7225', name: '测试订阅', url: 'https://x.test/s?token=<redacted>', active: true, type: 'remote', nodes: 40, userInfo: { total: 1, upload: 1, download: 1, expire: null }, updated: 1, remark: '', source: 'cvr' }],
-    add: async ({ url }) => { calls.push(['add', url]); return { uid: 'AAAAAAAAAAAA', url: 'https://x.test/s?token=<redacted>', name: '新' }; },
-    edit: async (uid, p) => { calls.push(['edit', uid, p]); return { uid, url: 'https://x.test/s?token=<redacted>' }; },
+    add: async ({ url }) => {
+      if (!httpUrl(url)) throw new ApiError('subscription_url_invalid', '订阅地址必须是完整的 http(s) 链接', '示例：https://机场域名/路径?token=xxx');
+      calls.push(['add', url]);
+      return { uid: 'AAAAAAAAAAAA', url: 'https://x.test/s?token=<redacted>', name: '新' };
+    },
+    edit: async (uid, p) => {
+      if (p.url !== undefined && !httpUrl(p.url)) throw new ApiError('subscription_url_invalid', '订阅地址必须是完整的 http(s) 链接', '');
+      calls.push(['edit', uid, p]);
+      return { uid, url: 'https://x.test/s?token=<redacted>' };
+    },
     update: async (uid) => ({ uid, nodes: 41 }),
     updateAll: async () => ({ results: [{ uid: 'TESTUIDd7225', ok: true }] }),
     activate: async (uid) => ({ current: uid, groups: [] }),
     remove: async () => ({ removed: 'TESTUIDd7225', trashed: ['TESTUIDd7225.yaml'] }),
   };
-  const cvr = { start: async (o) => { calls.push(['start', o]); return { scope: o.scope, systemProxySuppressed: o.scope === 'session', channel: { kind: 'pipe', ports: RUNTIME.ports }, waitedMs: 1200 }; }, stop: async (o) => ({ killed: ['clash-verge.exe'], restored: o.restore }), listBackups: () => [{ name: 'verge.yaml', ts: '20260930-1', backupPath: '/tmp/b' }], modifiedSinceBackup: () => ({ modified: [] }), restore: async () => ({ restored: [{ name: 'verge.yaml', backupPath: '/tmp/b' }] }), suppressSystemProxy: async () => ({ changed: [] }), setExternalController: async (v) => ({ changed: v ? [{ key: 'enable_external_controller', before: 'false', after: 'true' }] : [] }) };
+  // start 的返回值必须含 backups：真 CvrConfig.start 一定返回它，漏了就会让
+  // proxy_core_start 的 r.backups.map 只在测试里炸（Task 13 假 git runner 的同款错误）。
+  const cvr = { start: async (o) => { calls.push(['start', o]); return { scope: o.scope, systemProxySuppressed: o.scope === 'session', channel: { kind: 'pipe', ports: RUNTIME.ports }, ports: RUNTIME.ports, waitedMs: 1200, backups: [{ name: 'verge.yaml', ts: '20260930-1', backupPath: '/tmp/b', skipped: false }, { name: 'profiles.yaml', ts: '20260930-1', skipped: true }] }; }, stop: async (o) => ({ killed: ['clash-verge.exe'], restored: o.restore }), listBackups: () => [{ name: 'verge.yaml', ts: '20260930-1', backupPath: '/tmp/b' }], modifiedSinceBackup: () => ({ modified: [] }), restore: async () => ({ restored: [{ name: 'verge.yaml', backupPath: '/tmp/b' }] }), suppressSystemProxy: async () => ({ changed: [] }), setExternalController: async (v) => ({ changed: v ? [{ key: 'enable_external_controller', before: 'false', after: 'true' }] : [] }) };
   const toolConfig = { apply: async (a) => { calls.push(['tc-apply', a]); return { npm: { action: 'written' }, git: { applied: [{ key: 'http.https://github.com/.proxy', value: a.proxyUrl }] } }; }, revert: async () => ({ npm: { action: 'stripped' }, git: { removed: [] } }), status: async () => ({ verdict: 'clean', npmrc: { exists: true, managed: false, proxyLines: [] }, git: { managed: [], mismatch: false, otherHttpKeys: [] } }) };
 
   const deps = {
@@ -5104,8 +5116,8 @@ function fakeDeps(over = {}) {
 test('17 个工具全部注册，schema 合规且 description 是中文', () => {
   const { deps } = fakeDeps();
   const tools = buildTools(deps);
+  assert.equal(TOOL_NAMES.length, 17, 'spec §3.3 规定 17 个工具');
   assert.equal(tools.length, TOOL_NAMES.length);
-  assert.equal(tools.length >= 17, true);
   for (const t of tools) {
     assert.equal(t.inputSchema.type, 'object');
     assert.equal(t.inputSchema.additionalProperties, false, `${t.name} 必须收紧额外参数`);
@@ -5114,6 +5126,7 @@ test('17 个工具全部注册，schema 合规且 description 是中文', () => 
     assert.doesNotMatch(t.name, /[A-Z]/);
   }
   assert.deepEqual(new Set(tools.map((t) => t.name)).size, tools.length, '工具名不得重复');
+  assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOL_NAMES].sort(), 'TOOL_NAMES 与实际注册必须一一对应');
 });
 
 test('每个工具都能跑通一次并返回 ok:true', async () => {
@@ -5160,6 +5173,8 @@ test('参数校验：非法 mode / 缺 url / 非法 action 都被拒且不碰底
   assert.equal((await callTool('proxy_subscription_add', { url: '不是链接' }, deps)).kind, 'subscription_url_invalid');
   assert.equal((await callTool('proxy_toolconfig', { action: 'explode' }, deps)).kind, 'malformed_config');
   assert.equal((await callTool('proxy_core_start', { scope: 'planet' }, deps)).kind, 'malformed_config');
+  assert.equal((await callTool('proxy_diagnose', { targets: 'https://github.com' }, deps)).kind, 'malformed_config');
+  assert.equal((await callTool('proxy_env', { timeoutish: 1 }, deps)).kind, 'malformed_config');
   assert.equal(calls.length, 0, '校验失败不能已经调过底层');
 });
 
@@ -5171,10 +5186,12 @@ test('未知工具名 -> 明确错误而不是静默', async () => {
 });
 
 test('核心不可达时按 kind 分类，proxy_status 例外仍回 ok:true', async () => {
+  // 真 transport/clash-client 一律抛 ApiError（kind+hint 都在实例上），
+  // 用"普通 Error 加 .kind 属性"的假件会让 toEnvelope 走未预期错误分支，hint 变成兜底文案 —— 假件必须在撒谎。
   const { deps } = fakeDeps({
-    getClient: async () => { const e = new Error('连不上'); e.kind = 'channel_unavailable'; e.hint = '先 start'; throw e; },
+    getClient: async () => { throw new ApiError('channel_unavailable', '连不上', '先 start'); },
   });
-  for (const name of ['proxy_nodes', 'proxy_test', 'proxy_select', 'proxy_subscription_activate']) {
+  for (const name of ['proxy_nodes', 'proxy_test', 'proxy_select']) {
     const env = await callTool(name, name === 'proxy_select' ? { group: 'a', target: 'b' } : { group: 'a' }, deps);
     assert.equal(env.ok, false, name);
     assert.equal(env.kind, 'channel_unavailable', name);
@@ -5184,6 +5201,9 @@ test('核心不可达时按 kind 分类，proxy_status 例外仍回 ok:true', as
   assert.equal(status.ok, true);
   assert.equal(status.data.core.reachable, false);
   assert.equal(status.data.core.kind, 'channel_unavailable');
+  // 订阅 CRUD 刻意不依赖核心：核心没跑时切订阅仍要能写注册表，repo 自己会跳过 reload
+  const act = await callTool('proxy_subscription_activate', { uid: 'TESTUIDd7225' }, deps);
+  assert.equal(act.ok, true);
 });
 
 test('未安装时给 not_installed + 安装指引', async () => {
@@ -5191,6 +5211,12 @@ test('未安装时给 not_installed + 安装指引', async () => {
   const e = await callTool('proxy_nodes', {}, deps);
   assert.equal(e.kind, 'not_installed');
   assert.match(e.hint, /安装|QVP_INSTALL_DIR/);
+  for (const name of ['proxy_subscriptions', 'proxy_subscription_add', 'proxy_env', 'proxy_toolconfig', 'proxy_diagnose']) {
+    // 每个工具都要给到"参数合法"的程度，否则测到的是参数校验而不是未安装分支
+    const args = name === 'proxy_subscription_add' ? { url: 'https://x.test/s?token=T' }
+      : name === 'proxy_toolconfig' ? { action: 'status' } : {};
+    assert.equal((await callTool(name, args, deps)).kind, 'not_installed', name);
+  }
 });
 
 test('输出全过脱敏：订阅 token 与节点地址不出现', async () => {
@@ -5232,7 +5258,9 @@ test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', a
   assert.equal(fake.state.proxies['节点选择'].now, 'JP 1 | v3', '真写到了 fake');
 
   const tested = await callTool('proxy_test', { group: '节点选择' }, deps);
-  assert.equal(tested.data.results.find((r) => r.name === 'dead-node').ok, false);
+  const dead = tested.data.results.find((r) => r.name === 'dead-node');
+  assert.equal(dead.ok, false);
+  assert.equal(dead.kind, 'timeout', '坏节点是节点问题，不能被归成通道问题');
   assert.ok(tested.data.results.find((r) => r.name === 'HK 3 | v4').delay > 0);
   assert.ok(tested.data.best === 'TW 2 | v4' || /^[A-Z]/.test(tested.data.best), 'best 排序后有值');
 
@@ -5243,9 +5271,9 @@ test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', a
   assert.ok(!JSON.stringify(subs).includes('ZZZ'), '全链路也不泄露 token');
 
   const status = await callTool('proxy_status', {}, deps);
-  assert.equal(status.data.channel.kind, 'pipe');
-  assert.equal(status.data.mode, 'rule');
-  assert.equal(status.data.subscription.current, 'TESTUIDd7225');
+  assert.equal(status.data.core.channel, 'pipe');
+  assert.equal(status.data.core.mode, 'rule');
+  assert.equal(status.data.subscription.current.uid, 'TESTUIDd7225');
 
   client.close();
   await fake.close();
@@ -5259,12 +5287,11 @@ test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', a
 
 ```js
 'use strict';
-const { ok, fail, ApiError, ENVELOPE_KINDS, toEnvelope } = require('./envelope');
+const { ok, fail, ApiError, toEnvelope } = require('./envelope');
 const { redactText, redactUrl } = require('./redact');
-const { buildProxyEnv, inlinePrefix } = require('./env');
-const { ToolConfig } = require('./toolconfig');
+const { buildProxyEnv, inlinePrefix, GIT_PROXY_HOSTS } = require('./env');
+const { probeTcp } = require('./discovery');
 const { runDiagnose, DEFAULT_TARGETS } = require('./diagnose');
-const { SERVER_INFO } = require('./meta');
 
 const MODES = ['rule', 'global', 'direct'];
 const SCOPES = ['session', 'global'];
@@ -5275,11 +5302,36 @@ const TC_ACTIONS = ['apply', 'revert', 'status'];
 const obj = (props = {}, required = []) => ({ type: 'object', properties: props, required, additionalProperties: false });
 const str = (enumVals, desc) => ({ type: 'string', description: desc, ...(enumVals ? { enum: enumVals } : {}) });
 const bool = (desc) => ({ type: 'boolean', description: desc });
+const arr = (desc) => ({ type: 'array', items: { type: 'string' }, description: desc });
+const numSchema = (desc) => ({ type: 'number', description: desc });
 
 function bad(message, hint) { return new ApiError('malformed_config', message, hint || ''); }
 
 function assertEnum(value, list, label) {
   if (!list.includes(value)) throw bad(`${label} 只能是 ${list.join(' / ')}，收到 ${redactText(String(value))}`);
+}
+
+// MCP schema 写了 additionalProperties:false，但 JSON-RPC 客户端不保证遵守；
+// 在这里真拦一次，否则拼错的参数名会被静默忽略，调用方以为自己做对了什么。
+function rejectExtra(args, schema) {
+  const known = Object.keys(schema.properties || {});
+  const extra = Object.keys(args || {}).filter((k) => !known.includes(k) && args[k] !== undefined);
+  if (extra.length) {
+    throw bad(`不接受的参数：${extra.map((k) => redactText(k)).join(', ')}`, known.length ? `可用参数：${known.join(', ')}` : '这个工具不需要任何参数');
+  }
+}
+
+function positive(v, label) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw bad(`${label} 必须是正数，收到 ${redactText(String(v))}`);
+  return n;
+}
+const numOr = (v, def, label) => (v === undefined || v === null || v === '' ? def : positive(v, label));
+const numOpt = (v, label) => (v === undefined || v === null ? undefined : positive(v, label));
+
+function assertArray(v, label) {
+  if (!Array.isArray(v)) throw bad(`${label} 必须是字符串数组，收到 ${redactText(String(v))}`, '单个元素也要写成数组：["…"]');
+  return v.map(String);
 }
 
 async function requireInstalled(deps) {
@@ -5294,6 +5346,15 @@ async function requireClient(deps) {
   const rt = await requireInstalled(deps);
   const client = await deps.getClient();
   return { rt, client };
+}
+
+// 注册表在 CVR 配置目录里：没有 configDir 时 repo 是 null，
+// 直接 .list() 会变成 TypeError，用户看到的是"未预期的错误"而不是"没装"。
+async function requireRepo(deps) {
+  await requireInstalled(deps);
+  const repo = await deps.getRepo();
+  if (!repo) throw new ApiError('not_installed', '找不到 CVR 配置目录，订阅注册表无法读写', '用 proxy_detect 确认配置目录，或设置 QVP_CONFIG_DIR');
+  return repo;
 }
 
 function portsOf(rt) {
@@ -5314,6 +5375,12 @@ function subscriptionSummary(repoEntry) {
   };
 }
 
+function groupOrThrow(groups, nodes, group) {
+  const hit = groups.find((g) => g.name === group);
+  if (!hit) throw new ApiError('malformed_config', `没有名为 ${redactText(String(group))} 的代理组`, `可选：${groups.map((g) => g.name).join(' / ')}`);
+  return hit.all.filter((n) => nodes.includes(n));
+}
+
 function buildTools(deps) {
   return [
     {
@@ -5332,17 +5399,18 @@ function buildTools(deps) {
         };
         try {
           const client = await deps.getClient();
-          const [cfg, proxies, version] = [await client.getConfigs(), await client.getProxies(), await client.version()];
+          const cfg = await client.getConfigs();
+          const proxies = await client.getProxies();
+          const version = await client.version();
           out.core = { reachable: true, channel: client.channelKind, version: version.version, mode: cfg.mode, mixedPort: cfg.mixedPort, tunEnabled: cfg.tunEnabled, groups: proxies.groups.map((g) => ({ name: g.name, type: g.type, now: g.now, count: g.all.length })) };
         } catch (e) {
           const env = toEnvelope(e);
           out.core = { reachable: false, kind: env.kind, message: env.message, hint: env.hint };
         }
         try {
-          const list = await deps.getRepo().then((r) => (r ? r.list() : []));
-          const subs = await list;
-          const currentSub = subs.find((s) => s.active) || null;
-          out.subscription = { total: subs.length, current: subscriptionSummary(currentSub) };
+          const repo = await deps.getRepo();
+          const subs = repo ? await repo.list() : [];
+          out.subscription = { total: subs.length, current: subscriptionSummary(subs.find((s) => s.active) || null) };
         } catch (e) {
           out.subscription = { error: toEnvelope(e).kind };
         }
@@ -5365,7 +5433,6 @@ function buildTools(deps) {
       inputSchema: obj(),
       handler: async () => {
         const rt = await deps.getRuntime();
-        const { probeTcp } = require('./discovery');
         const candidates = [];
         const push = (label, port, protocol, fromConfig) => {
           if (port) candidates.push({ label, port, protocol, fromConfig });
@@ -5374,8 +5441,7 @@ function buildTools(deps) {
         push('socks', rt.ports.socks, 'socks5', true);
         push('http', rt.ports.http, 'http', true);
         if (rt.controller.tcpConfigured) {
-          const p = Number(String(rt.controller.tcpConfigured).split(':').pop());
-          push('external-controller', p, 'rest-api', true);
+          push('external-controller', Number(String(rt.controller.tcpConfigured).split(':').pop()), 'rest-api', true);
         }
         for (const p of [7890, 7891, 7897, 7898, 7899, 9090, 9097]) {
           if (!candidates.some((c) => c.port === p)) push(`常见端口 ${p}`, p, 'unknown', false);
@@ -5401,36 +5467,42 @@ function buildTools(deps) {
     {
       name: 'proxy_core_start',
       description: '启动 Clash Verge Rev。默认 scope=session：先备份 verge.yaml，再把 enable_system_proxy 与 enable_proxy_guard 置为 false，使只有本会话的工具链走代理，浏览器与游戏完全不受影响；scope=global 保留用户自己的系统代理设置。等待控制通道就绪后返回实际通道与端口。当 channel_unavailable 提示需要开启外部控制时，用 enableExternalControl=true 再调一次本工具即可（会改 verge.yaml，已先备份，启动失败自动回滚）；没有用户明确同意不要传 true。',
-      inputSchema: obj({ scope: str(SCOPES, 'session=压制系统代理（推荐）；global=按 CVR 自身配置行事，可能影响整机'), timeoutMs: { type: 'number', description: '等待控制器就绪的毫秒数，默认 25000' }, enableExternalControl: bool('是否在启动前把 enable_external_controller 置为 true，用于打通 TCP 9097 控制口；默认 false，只在用户确认后传 true') }),
-      handler: async ({ scope = 'session', timeoutMs, enableExternalControl = false } = {}) => {
+      inputSchema: obj({
+        scope: str(SCOPES, 'session=压制系统代理（推荐）；global=按 CVR 自身配置行事，可能影响整机'),
+        timeoutMs: numSchema('等待控制器就绪的毫秒数，默认 25000'),
+        enableExternalControl: bool('是否在启动前把 enable_external_controller 置为 true，用于打通 TCP 9097 控制口；默认 false，只在用户确认后传 true'),
+      }),
+      handler: async (a = {}) => {
+        const scope = a.scope === undefined ? 'session' : a.scope;
         assertEnum(scope, SCOPES, 'scope');
+        const timeoutMs = numOr(a.timeoutMs, 25000, 'timeoutMs');
         const cvr = await deps.getCvr();
         if (!cvr) throw new ApiError('not_installed', '找不到 CVR 可执行文件路径', '用 proxy_detect 确认安装目录');
-        const r = await cvr.start({ scope, timeoutMs: timeoutMs || 25000, enableExternalControl: Boolean(enableExternalControl) });
-        return ok({ ...r, backups: r.backups.map((b) => ({ name: b.name, ts: b.ts, skipped: Boolean(b.skipped) })) });
+        const r = await cvr.start({ scope, timeoutMs, enableExternalControl: Boolean(a.enableExternalControl) });
+        return ok({ ...r, backups: (r.backups || []).map((b) => ({ name: b.name, ts: b.ts, skipped: Boolean(b.skipped) })) });
       },
     },
     {
       name: 'proxy_core_stop',
       description: '结束 clash-verge.exe 与 verge-mihomo.exe 进程。restore=true（默认）时把 verge.yaml 与 profiles.yaml 还原到最近一次插件备份，让配置回到插件动手之前的状态。',
       inputSchema: obj({ restore: bool('是否还原配置备份，默认 true') }),
-      handler: async ({ restore = true } = {}) => {
+      handler: async (a = {}) => {
         const cvr = await deps.getCvr();
         if (!cvr) throw new ApiError('not_installed', '找不到 CVR 配置目录', '');
-        return ok(await cvr.stop({ restore: Boolean(restore) }));
+        return ok(await cvr.stop({ restore: a.restore !== false }));
       },
     },
     {
       name: 'proxy_nodes',
       description: '列出代理策略组与组内节点名，含每组当前选中节点 all 列表与 history。只返回名称，不含任何服务器地址、端口、密码或 uuid。',
       inputSchema: obj({ group: str(null, '只看某个组；省略则返回全部组') }),
-      handler: async ({ group } = {}) => {
+      handler: async (a = {}) => {
         const { client } = await requireClient(deps);
         const { groups, nodes } = await client.getProxies();
-        if (group) {
-          const hit = groups.find((g) => g.name === group);
-          if (!hit) throw new ApiError('malformed_config', `没有名为 ${redactText(String(group))} 的代理组`, `可选：${groups.map((g) => g.name).join(' / ')}`);
-          return ok({ groups: [hit], nodes: hit.all.filter((n) => nodes.includes(n)) });
+        if (a.group) {
+          const all = groupOrThrow(groups, nodes, a.group);
+          const hit = groups.find((g) => g.name === a.group);
+          return ok({ groups: [{ name: hit.name, type: hit.type, now: hit.now, all: hit.all }], nodes: all });
         }
         return ok({ groups: groups.map((g) => ({ name: g.name, type: g.type, now: g.now, all: g.all })), nodes });
       },
@@ -5439,17 +5511,17 @@ function buildTools(deps) {
       name: 'proxy_select',
       description: '切换节点或运行模式。传 group+target 切换某组到指定节点（切换后回读确认）；或传 mode 切 rule/global/direct。',
       inputSchema: obj({ group: str(null, '策略组名'), target: str(null, '目标节点名，必须在该组 all 里'), mode: str(MODES, '运行模式；global=全部走代理，direct=全部直连，rule=按规则') }),
-      handler: async ({ group, target, mode } = {}) => {
+      handler: async (a = {}) => {
+        // 先校验再碰核心：参数不合法时不该已经建过一次控制通道连接
+        if (a.mode !== undefined) assertEnum(a.mode, MODES, 'mode');
+        else if (!a.group || !a.target) throw bad('需要 group+target，或者 mode', '先用 proxy_nodes 看组名与节点名');
         const { client } = await requireClient(deps);
-        if (mode !== undefined) {
-          assertEnum(mode, MODES, 'mode');
-          await client.setConfigs({ mode });
+        if (a.mode !== undefined) {
+          await client.setConfigs({ mode: a.mode });
           const cfg = await client.getConfigs();
-          return ok({ kind: 'mode', mode: cfg.mode, confirmed: cfg.mode === mode });
+          return ok({ kind: 'mode', mode: cfg.mode, confirmed: cfg.mode === a.mode });
         }
-        if (!group || !target) throw bad('需要 group+target，或者 mode', '先用 proxy_nodes 看组名与节点名');
-        const r = await client.select(group, target);
-        return ok({ kind: 'node', ...r });
+        return ok({ kind: 'node', ...(await client.select(a.group, a.target)) });
       },
     },
     {
@@ -5459,31 +5531,28 @@ function buildTools(deps) {
         group: str(null, '测该组内全部节点'),
         proxy: str(null, '只测单个节点'),
         url: str(null, '测速目标，默认 https://www.gstatic.com/generate_204'),
-        timeout: { type: 'number', description: '单节点毫秒超时，默认 5000' },
+        timeout: numSchema('单节点毫秒超时，默认 5000'),
       }),
-      handler: async ({ group, proxy, url, timeout } = {}) => {
+      handler: async (a = {}) => {
         const { client } = await requireClient(deps);
         const names = [];
-        if (proxy) names.push(proxy);
+        if (a.proxy) names.push(a.proxy);
         else {
           const { groups, nodes } = await client.getProxies();
-          if (group) {
-            const hit = groups.find((g) => g.name === group);
-            if (!hit) throw new ApiError('malformed_config', `没有名为 ${redactText(String(group))} 的代理组`, `可选：${groups.map((g) => g.name).join(' / ')}`);
-            names.push(...hit.all.filter((n) => nodes.includes(n)));
-          } else names.push(...nodes);
+          if (a.group) names.push(...groupOrThrow(groups, nodes, a.group));
+          else names.push(...nodes);
         }
-        const timeoutMs = timeout && timeout > 0 ? Number(timeout) : 5000;
+        const timeoutMs = numOr(a.timeout, 5000, 'timeout');
         const results = [];
         for (const name of names) {
-          try { results.push({ name, ok: true, delay: await client.delay(name, { url, timeoutMs }) }); }
+          try { results.push({ name, ok: true, delay: await client.delay(name, { url: a.url, timeoutMs }) }); }
           catch (e) { const env = toEnvelope(e); results.push({ name, ok: false, kind: env.kind, message: env.message }); }
         }
-        const sorted = [...results].sort((a, b) => (a.ok ? a.delay : Infinity) - (b.ok ? b.delay : Infinity));
+        const sorted = [...results].sort((x, y) => (x.ok ? x.delay : Infinity) - (y.ok ? y.delay : Infinity));
         return ok({
           tested: results.length,
           passed: results.filter((r) => r.ok).length,
-          url: url || 'https://www.gstatic.com/generate_204',
+          url: a.url || 'https://www.gstatic.com/generate_204',
           timeoutMs,
           best: sorted.length && sorted[0].ok ? sorted[0].name : null,
           results: sorted,
@@ -5493,29 +5562,31 @@ function buildTools(deps) {
     {
       name: 'proxy_env',
       description: '给出可直接使用的代理配置片段（端口来自实时解析，不是写死的 7897）。target=shell 返回内联前缀与 export 行；npm/git/pip 返回各自专用命令。NO_PROXY 不含 CIDR（多数工具不支持）。',
-      inputSchema: obj({ target: str(TARGETS, '要适配的工具，省略则返回全部形态'), noProxyExtra: { type: 'array', items: { type: 'string' }, description: '额外直连域名后缀，如内网域' } }),
-      handler: async ({ target = 'shell', noProxyExtra = [] } = {}) => {
+      inputSchema: obj({ target: str(TARGETS, '要适配的工具，省略则返回全部形态'), noProxyExtra: arr('额外直连域名后缀，如内网域') }),
+      handler: async (a = {}) => {
+        const target = a.target === undefined ? 'shell' : a.target;
         assertEnum(target, TARGETS, 'target');
         const rt = await requireInstalled(deps);
         const mixed = portsOf(rt);
-        const env = buildProxyEnv({ mixedPort: mixed, socksPort: rt.ports.socks || undefined, noProxyExtra });
+        const env = buildProxyEnv({ mixedPort: mixed, socksPort: rt.ports.socks || undefined, noProxyExtra: a.noProxyExtra ? assertArray(a.noProxyExtra, 'noProxyExtra') : [] });
         return ok({ target, proxyUrl: env.proxyUrl, vars: env.vars, inline: inlinePrefix(env), snippet: env[target], all: { shell: env.shell, npm: env.npm, git: env.git, pip: env.pip }, warning: '这是单次用法；要让整个会话的 npm/git 都走代理用 proxy_toolconfig' });
       },
     },
     {
       name: 'proxy_toolconfig',
       description: '把代理写进用户级工具配置，让本会话之外的 npm/git 命令也自动走代理（不需要 agent 每次加前缀）。npm 用 ~/.npmrc 的托管块，git 用按域名前缀的 http.https://<host>/.proxy（只影响 GitHub，不动全局 http.proxy，不改系统代理，因此浏览器与游戏不变）。apply 前自动备份 ~/.npmrc。action=status 回显当前是否由插件写入、值是否与当前端口一致。',
-      inputSchema: obj({ action: str(TC_ACTIONS, 'apply 写入 / revert 还原 / status 查看'), target: str(TC_TARGETS, '省略则 npm 与 git 一起处理'), hosts: { type: 'array', items: { type: 'string' }, description: '自定义 git 域名列表，默认 GitHub 三个域名' } }),
-      handler: async ({ action, target, hosts } = {}) => {
-        assertEnum(action, TC_ACTIONS, 'action');
-        if (target !== undefined) assertEnum(target, TC_TARGETS, 'target');
+      inputSchema: obj({ action: str(TC_ACTIONS, 'apply 写入 / revert 还原 / status 查看'), target: str(TC_TARGETS, '省略则 npm 与 git 一起处理'), hosts: arr(`自定义 git 域名列表，默认 ${GIT_PROXY_HOSTS.join(' / ')}`) }, ['action']),
+      handler: async (a = {}) => {
+        assertEnum(a.action, TC_ACTIONS, 'action');
+        if (a.target !== undefined) assertEnum(a.target, TC_TARGETS, 'target');
         const rt = await requireInstalled(deps);
         const mixed = portsOf(rt);
         const tc = await deps.getToolConfig();
-        const targets = target ? [target] : ['npm', 'git'];
+        const targets = a.target ? [a.target] : ['npm', 'git'];
+        const hosts = a.hosts ? assertArray(a.hosts, 'hosts') : undefined;
         const proxyUrl = `http://127.0.0.1:${mixed}`;
-        if (action === 'apply') return ok({ action, targets, proxyUrl, ...(await tc.apply({ proxyUrl, targets, hosts })) });
-        if (action === 'revert') return ok({ action, targets, ...(await tc.revert({ targets, hosts })) });
+        if (a.action === 'apply') return ok({ action: a.action, targets, proxyUrl, ...(await tc.apply({ proxyUrl, targets, hosts })) });
+        if (a.action === 'revert') return ok({ action: a.action, targets, ...(await tc.revert({ targets, hosts })) });
         return ok(await tc.status({ hosts, expectedProxyUrl: proxyUrl }));
       },
     },
@@ -5523,75 +5594,88 @@ function buildTools(deps) {
       name: 'proxy_subscriptions',
       description: '列出全部订阅：名称、脱敏后的 url（token 恒为 <redacted>）、是否当前激活、节点数、已用/总量流量与到期日、最后更新时间、来源（cvr=Clash Verge 原有 / plugin=插件添加）、备注。数据以 profiles.yaml 为准，每次现读不缓存。',
       inputSchema: obj(),
-      handler: async () => ok(await (await deps.getRepo()).list()),
+      handler: async () => ok(await (await requireRepo(deps)).list()),
     },
     {
       name: 'proxy_subscription_add',
       description: '添加一条新订阅（机场换链接或加第二个机场用）。用 Clash 家族 User-Agent 抓取，校验返回必须是 YAML 或 base64 节点串而不是 HTML 登录页；通过才生成 uid、写 profiles/<uid>.yaml 与 profiles.yaml 注册项，写后立即重读校验，不一致则回滚并报 profile_registry_desync。activate=true 顺带切过去并 reload。',
-      inputSchema: obj({ url: str(null, '完整 http(s) 订阅链接'), name: str(null, '显示名，缺省用响应 content-disposition 里的名字'), remark: str(null, '备注，只存插件侧清单'), activate: bool('添加后立即激活'), autoUpdate: bool('是否允许自动更新，默认 true'), updateInterval: { type: 'number', description: '自动更新间隔分钟数，默认 1440' } }, ['url']),
-      handler: async ({ url } = {}) => {
-        if (typeof url !== 'string' || !url.trim()) throw new ApiError('subscription_url_invalid', '必须提供订阅 url', '示例：https://机场域名/路径?token=xxx');
-        return ok(await (await deps.getRepo()).add({ ...arguments0({ url }) }));
+      inputSchema: obj({ url: str(null, '完整 http(s) 订阅链接'), name: str(null, '显示名，缺省用响应 content-disposition 里的名字'), remark: str(null, '备注，只存插件侧清单'), activate: bool('添加后立即激活'), autoUpdate: bool('是否允许自动更新，默认 true'), updateInterval: numSchema('自动更新间隔分钟数，默认 1440') }, ['url']),
+      handler: async (a = {}) => {
+        if (typeof a.url !== 'string' || !a.url.trim()) {
+          throw new ApiError('subscription_url_invalid', '必须提供订阅 url', '示例：https://机场域名/路径?token=xxx');
+        }
+        return ok(await (await requireRepo(deps)).add({
+          url: a.url, name: a.name, remark: a.remark,
+          activate: Boolean(a.activate), autoUpdate: a.autoUpdate !== false,
+          updateInterval: numOr(a.updateInterval, 1440, 'updateInterval'),
+        }));
       },
     },
     {
       name: 'proxy_subscription_edit',
       description: '修改已有订阅：换 url（token 轮换或机场换域名）、改显示名、备注、自动更新策略。换 url 时会先抓取校验成功才写注册表，抓取失败则一行都不改；内容文件保持原样（只有 proxy_subscription_update 才重写）。',
-      inputSchema: obj({ uid: str(null, '订阅 uid'), url: str(null, '新的订阅链接'), name: str(null, '新显示名'), remark: str(null, '新备注'), autoUpdate: bool('是否允许自动更新'), updateInterval: { type: 'number', description: '更新间隔分钟数' } }, ['uid']),
-      handler: async ({ uid } = {}) => {
-        if (!uid) throw new ApiError('subscription_not_found', '缺少 uid', '用 proxy_subscriptions 查看');
-        const rest = { ...arguments0({ uid }) };
-        return ok(await (await deps.getRepo()).edit(String(uid), rest));
+      inputSchema: obj({ uid: str(null, '订阅 uid'), url: str(null, '新的订阅链接'), name: str(null, '新显示名'), remark: str(null, '新备注'), autoUpdate: bool('是否允许自动更新'), updateInterval: numSchema('更新间隔分钟数') }, ['uid']),
+      handler: async (a = {}) => {
+        if (!a.uid) throw new ApiError('subscription_not_found', '缺少 uid', '用 proxy_subscriptions 查看');
+        return ok(await (await requireRepo(deps)).edit(String(a.uid), {
+          url: a.url, name: a.name, remark: a.remark,
+          autoUpdate: a.autoUpdate, updateInterval: numOpt(a.updateInterval, 'updateInterval'),
+        }));
       },
     },
     {
       name: 'proxy_subscription_update',
       description: '重新抓取订阅并刷新：传 uid 更新单条，传 all=true 批量更新。返回流量余量与节点数变化。抓取失败时保留旧配置（内容文件与注册表都不动）并返回对应 kind，批量时单条失败不影响其他条。',
       inputSchema: obj({ uid: str(null, '单条订阅 uid'), all: bool('批量更新全部（此时忽略 uid）') }),
-      handler: async ({ uid, all } = {}) => {
-        const repo = await deps.getRepo();
-        if (all) return ok(await repo.updateAll());
-        if (!uid) throw bad('需要 uid 或 all=true', '用 proxy_subscriptions 查看清单');
-        return ok(await repo.update(String(uid)));
+      handler: async (a = {}) => {
+        const repo = await requireRepo(deps);
+        if (a.all) return ok(await repo.updateAll());
+        if (!a.uid) throw bad('需要 uid 或 all=true', '用 proxy_subscriptions 查看清单');
+        return ok(await repo.update(String(a.uid)));
       },
     },
     {
       name: 'proxy_subscription_activate',
       description: '切换当前激活订阅：写 profiles.yaml 的 current、让 mihomo reload，并回读实际生效的组与节点作为确认。',
       inputSchema: obj({ uid: str(null, '要激活的订阅 uid') }, ['uid']),
-      handler: async ({ uid } = {}) => {
-        if (!uid) throw new ApiError('subscription_not_found', '缺少 uid', '用 proxy_subscriptions 查看');
-        return ok(await (await deps.getRepo()).activate(String(uid)));
+      handler: async (a = {}) => {
+        if (!a.uid) throw new ApiError('subscription_not_found', '缺少 uid', '用 proxy_subscriptions 查看');
+        return ok(await (await requireRepo(deps)).activate(String(a.uid)));
       },
     },
     {
       name: 'proxy_subscription_remove',
       description: '删除订阅：从 profiles.yaml 移除注册项，内容文件移入插件回收目录（可撤销，不硬删）。删除当前激活项必须显式 force=true。',
       inputSchema: obj({ uid: str(null, '要删除的订阅 uid'), force: bool('删除当前激活项时必填 true') }, ['uid']),
-      handler: async ({ uid, force } = {}) => {
-        if (!uid) throw new ApiError('subscription_not_found', '缺少 uid', '');
-        return ok(await (await deps.getRepo()).remove(String(uid), { force: Boolean(force) }));
+      handler: async (a = {}) => {
+        if (!a.uid) throw new ApiError('subscription_not_found', '缺少 uid', '');
+        return ok(await (await requireRepo(deps)).remove(String(a.uid), { force: Boolean(a.force) }));
       },
     },
     {
       name: 'proxy_diagnose',
-      description: '核心验收工具：对 GitHub / Google / npm / PyPI / Qoder 等地址，同一时刻分别跑"直连"与"经代理"两轮 curl（直连轮显式 --noproxy 屏蔽环境变量），输出对比表、结论与建议。用于回答"这个域名到底需不需要代理"和"Qoder 自己该不该走代理"。',
-      inputSchema: obj({ targets: { type: 'array', items: { type: 'string' }, description: '要测的 URL 列表，省略则用内置 5 项' }, timeoutMs: { type: 'number', description: '单轮毫秒超时，默认 8000' } }),
-      handler: async ({ targets, timeoutMs } = {}) => {
+      description: '核心验收工具：对 GitHub / npm / PyPI / Qoder 等地址，同一时刻分别跑"直连"与"经代理"两轮 curl（直连轮显式 --noproxy 屏蔽环境变量），输出对比表、结论与建议。用于回答"这个域名到底需不需要代理"和"Qoder 自己该不该走代理"。',
+      inputSchema: obj({ targets: arr('要测的 URL 列表，省略则用内置 5 项'), timeoutMs: numSchema('单轮毫秒超时，默认 8000') }),
+      handler: async (a = {}) => {
         const rt = await requireInstalled(deps);
         const mixed = portsOf(rt);
-        const { probeTcp } = require('./discovery');
         const alive = await probeTcp({ host: '127.0.0.1', port: mixed, timeoutMs: 1000 });
-        const list = Array.isArray(targets) && targets.length
-          ? targets.map((u, i) => ({ label: `自定义 ${i + 1}`, url: String(u), expectDirect: true }))
-          : DEFAULT_TARGETS;
+        let list = DEFAULT_TARGETS;
+        if (a.targets !== undefined) {
+          const raw = assertArray(a.targets, 'targets');
+          if (!raw.length) throw bad('targets 是空数组', '要么给至少一个 URL，要么省略这个参数用内置 5 项');
+          list = raw.map((u, i) => {
+            if (!/^https?:\/\//i.test(u)) throw bad(`targets[${i + 1}] 必须是 http(s) URL`, `收到 ${redactText(u.slice(0, 60))}`);
+            return { label: `自定义 ${i + 1}`, url: u, expectDirect: true };
+          });
+        }
         const d = deps.getDiagnoseDeps();
         return ok(await runDiagnose({
           proxyUrl: `http://127.0.0.1:${mixed}`,
           portAlive: alive,
           targets: list,
           curlRunner: d.curlRunner,
-          timeoutMs: timeoutMs || 8000,
+          timeoutMs: numOr(a.timeoutMs, 8000, 'timeoutMs'),
         }));
       },
     },
@@ -5599,49 +5683,23 @@ function buildTools(deps) {
       name: 'proxy_restore_config',
       description: '列出插件对 verge.yaml / profiles.yaml 做过的全部带时间戳备份并还原。npm 与 git 的用户级配置走 ToolConfig 的托管块撤销（name=npm|git），因为它们的备份不在 CVR 配置目录里。中途放弃或想把改动全部撤销时用它；CVR 配置还原后与备份逐字节一致。',
       inputSchema: obj({ name: str(CVR_RESTORE_TARGETS, '只还原指定项：verge.yaml / profiles.yaml 走 CVR 备份；npm / git 走托管块移除。省略则还原两个 CVR 配置文件'), listOnly: bool('只列备份不还原') }),
-      handler: async ({ name, listOnly } = {}) => {
-        if (name !== undefined && !CVR_RESTORE_TARGETS.includes(name)) throw bad(`未知 name: ${redactText(String(name))}`, `可选 ${CVR_RESTORE_TARGETS.join(' / ')}`);
+      handler: async (a = {}) => {
+        if (a.name !== undefined) assertEnum(a.name, CVR_RESTORE_TARGETS, 'name');
         const cvr = await deps.getCvr();
         if (!cvr) throw new ApiError('not_installed', '没有可还原的 CVR 配置目录', '');
         const backups = cvr.listBackups();
-        if (listOnly) return ok({ backups, note: '还原会把内容写回 configDir，不会删除备份' });
+        if (a.listOnly) return ok({ backups, note: '还原会把内容写回 configDir，不会删除备份' });
         // npm/git 的托管块由 ToolConfig 拥有，CvrConfig 的备份目录里根本没有它们
-        if (name === 'npm' || name === 'git') {
+        if (a.name === 'npm' || a.name === 'git') {
           const tc = await deps.getToolConfig();
-          return ok({ via: 'toolconfig', result: await tc.revert({ targets: [name] }) });
+          return ok({ via: 'toolconfig', result: await tc.revert({ targets: [a.name] }) });
         }
-        const names = name ? [name] : ['verge.yaml', 'profiles.yaml'];
+        const names = a.name ? [a.name] : ['verge.yaml', 'profiles.yaml'];
         const r = await cvr.restore(names);
         return ok({ backups, restored: r.restored, skipped: names.filter((n) => !r.restored.some((x) => x.name === n)) });
       },
     },
   ];
-}
-
-/** 从 handler 的第一个参数对象里去掉已单独校验过的键 */
-function arguments0(first) {
-  const all = arguments[0];
-  const out = {};
-  for (const [k, v] of Object.entries(all || {})) if (v !== undefined && !(k in (typeof first === 'object' ? first : {}))) out[k] = v;
-  for (const [k, v] of Object.entries(first || {})) out[k] = v;
-  return out;
-}
-
-const TOOL_NAMES_FROM = buildTools;
-
-function nameListOf(tools) { return tools.map((t) => t.name); }
-
-async function callTool(name, args, deps) {
-  const tools = buildTools(deps);
-  const tool = tools.find((t) => t.name === name);
-  if (!tool) return fail('malformed_config', `未知工具 ${redactText(String(name))}`, `可用工具：${nameListOf(tools).join(', ')}`);
-  try {
-    const env = await tool.handler(args || {});
-    return { ...env, message: env.message ? redactText(env.message) : undefined, hint: env.hint ? redactText(env.hint) : undefined };
-  } catch (e) {
-    const env = toEnvelope(e);
-    return fail(env.kind, redactText(env.message), redactText(env.hint));
-  }
 }
 
 const TOOL_NAMES = [
@@ -5651,40 +5709,44 @@ const TOOL_NAMES = [
   'proxy_subscription_remove', 'proxy_diagnose', 'proxy_restore_config',
 ];
 
-module.exports = { buildTools, callTool, TOOL_NAMES, ENVELOPE_KINDS, SERVER_INFO };
+async function callTool(name, args, deps) {
+  const tool = buildTools(deps).find((t) => t.name === name);
+  if (!tool) return fail('malformed_config', `未知工具 ${redactText(String(name))}`, `可用工具：${TOOL_NAMES.join(', ')}`);
+  try {
+    rejectExtra(args || {}, tool.inputSchema);
+    return await tool.handler(args || {});
+  } catch (e) {
+    // 错误消息来自更深的层，可能带着原始 url，所以出边界前再过一次脱敏
+    const env = toEnvelope(e);
+    return fail(env.kind, redactText(env.message), redactText(env.hint));
+  }
+}
+
+module.exports = { buildTools, callTool, TOOL_NAMES };
 ```
 
-- [ ] **Step 6: 拆掉 `arguments0` 这个 hack（必做，不要留着）**
+- [ ] **Step 6: 落地与草稿的差异（不需要再做，记在这里免得下一个人以为代码写错了）**
 
-Step 5 里两个订阅 handler 用了一个靠 `arguments[0]` 反向取参的 `arguments0()` —— 它在严格模式的模块里直接抛 `ReferenceError`，而且语义绕。原因是我想"校验单个字段 + 把其余字段原样转发"。**改成显式转发**：
+草稿的 Step 5 里两个订阅 handler 用了一个靠 `arguments[0]` 反向取参的 `arguments0()`，本步骤原本是用来拆掉它的。实际写作时**一次到位、没有引入这个 hack**：`add`/`edit` 都显式列字段转发（见上一步的 handler），`const TOOL_NAMES_FROM = buildTools;` 这行也没写。留着本步骤只记录这个结论，代码上没有待办。
 
-```js
-      handler: async (a = {}) => {
-        if (typeof a.url !== 'string' || !a.url.trim()) {
-          throw new ApiError('subscription_url_invalid', '必须提供订阅 url', '示例：https://机场域名/路径?token=xxx');
-        }
-        return ok(await (await deps.getRepo()).add({
-          url: a.url, name: a.name, remark: a.remark,
-          activate: Boolean(a.activate), autoUpdate: a.autoUpdate !== false,
-          updateInterval: a.updateInterval || 1440,
-        }));
-      },
-```
+其余差异都是"草稿的假想实现"与"落地实现"的差，逐条：
 
-```js
-      handler: async (a = {}) => {
-        if (!a.uid) throw new ApiError('subscription_not_found', '缺少 uid', '用 proxy_subscriptions 查看');
-        return ok(await (await deps.getRepo()).edit(String(a.uid), {
-          url: a.url, name: a.name, remark: a.remark,
-          autoUpdate: a.autoUpdate, updateInterval: a.updateInterval,
-        }));
-      },
-```
+1. **`requireRepo(deps)` 取代三处 `await deps.getRepo()` 的重复空判**。草稿里每个订阅 handler 都要先 `const repo = await deps.getRepo(); if (!repo) throw …`；未装 CVR 的分支被抄了五遍。收成一个助手，`not_installed` 的提示统一带上 `QVP_CONFIG_DIR` 这条出路。
+2. **`rejectExtra(args, schema)`**：草稿对多余参数直接忽略，打错一个 `updateInterval` 的拼写会静默走默认值。落地把未知键变成 `malformed_config`，回信里列出该工具接受的参数名。
+3. **数值与数组参数走 `numOr`/`numOpt`/`assertArray`**：草稿把 `timeoutMs`、`updateInterval`、`names` 原样透传到底层，非正数或字符串会让底层抛出与代理无关的栈。现在在边界上判，报错文案是"必须是正数"这种能被下一轮工具调用改正的话。
+4. **`proxy_select` 先校验 mode/group+target 再 `requireClient`**：草稿先连核心再校验，参数写错时白等一次管道超时（最坏 3 秒），且回信里分不清"没连上"和"没给 target"。
+5. **`proxy_toolconfig` 的 schema 声明 `required: ['action']`**：草稿靠 handler 内部判空，`{}` 会走 `status` 分支 —— 一个读操作成了默认值，`action` 打错字时用户以为看到的是当前状态。
+6. **`proxy_core_start` 容忍 `(r.backups || [])`**：`cvr-config.js` 在配置目录里没有目标文件时返回的备份数组可能整个缺失，草稿的 `r.backups.map` 会在成功路径上抛 `TypeError`。
+7. **订阅 handler 不再返回 `arguments0` 时代的 `{…原始对象}`**：出边界的字段逐个列出，`redactUrl` 因此在每个含 url 的返回值上都有落点。
 
-删掉 `arguments0` 函数本体与 `const TOOL_NAMES_FROM = buildTools;` 这行无用导出。
+`node --test test/tools.test.js`
+Expected: PASS（9 个测试；草稿这一行写的是 10，落地后 `grep -c "^test(" test/tools.test.js` 就是 9，以代码为准）。`每个工具都能跑通一次` 那条若某个工具回 `ok:false`，多半是假 deps 少提供了方法（对照错误里的工具名补 `fakeDeps`），不要改断言。
 
-Run: `node --test test/tools.test.js`
-Expected: PASS（10 个测试）。`每个工具都能跑通一次` 那条如果某个工具回 `ok:false`，多半是假 deps 少提供了方法（对照错误里的工具名补 `fakeDeps`），不要改断言。
+**假 deps 反过来暴露的三条实现问题**（这一类 bug 的通用形态：假件比真模块宽容，测试就在验证一个不存在的实现）：
+
+- `fake.cvr.start` 不返回 `backups` → 触发上面第 6 条。补成 `cvr-config.js` 真实的 `{ok, backups, restarted, warnings}` 形状。
+- `fake.getClient` 抛的是随手 `new Error()` 再挂 `.kind`/`.hint` → `toEnvelope` 认不出 `ApiError`，落到兜底分支回 `channel_unavailable` + "未预期的错误"，用户看到的提示是空的。改成抛真的 `new ApiError('channel_unavailable', '连不上', '先 start')`；`delay` 同理改成 `ApiError('timeout', …)`，并补一条 `dead.kind === 'timeout'` 断言 —— 坏节点必须被标成超时，`proxy_test` 才排得出序。
+- `RUNTIME.channelHint` 写成占位串 → 未安装场景的回信没有可操作性。换成 `discovery.js` 真实产出的那句（`discovery.test.js` 已断言它含"安装"）。
 
 - [ ] **Step 7: 实现 index.js（stdio 入口）**
 
@@ -5693,36 +5755,42 @@ Expected: PASS（10 个测试）。`每个工具都能跑通一次` 那条如果
 ```js
 'use strict';
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { framer, handleMessage } = require('./protocol');
-const { buildTools } = require('./tools');
+const { buildTools, callTool } = require('./tools');
 const { discover } = require('./discovery');
 const { ClashClient } = require('./clash-client');
-const { createTransport } = require('./transport');
 const { CvrConfig } = require('./cvr-config');
 const { SubscriptionRepo } = require('./subscriptions');
 const { ToolConfig } = require('./toolconfig');
+const { ApiError } = require('./envelope');
 const store = require('./store');
 
 const LOG_FILE = 'mcp.log';
+const RUNTIME_TTL_MS = 2000;
+const DRAIN_GRACE_MS = 15000;
 
 function makeLogger(dirs) {
   let stream = null;
   try { stream = fs.createWriteStream(path.join(dirs.logs, LOG_FILE), { flags: 'a' }); } catch { stream = null; }
-  return (line) => {
+  const log = (line) => {
     const text = `[${new Date().toISOString()}] ${String(line)}`.slice(0, 4000);
     if (stream) stream.write(text + '\n');
     try { process.stderr.write(text + '\n'); } catch { /* stderr 被关时忽略 */ }
   };
+  // 日志流是 ref 的：不关掉它，stdin 结束后事件循环永不空转，进程挂住不退
+  log.close = () => { if (stream) { stream.end(); stream = null; } };
+  return log;
 }
 
 function buildDeps(dirs, log) {
   let runtimeCache = null;
   let runtimeAt = 0;
-  let client = null;
 
   const getRuntime = async () => {
-    if (runtimeCache && Date.now() - runtimeAt < 2000) return runtimeCache;
+    // 2 秒缓存：一条工具链常常要读三四次 runtime，而 discover() 要扫盘与读三个 yaml
+    if (runtimeCache && Date.now() - runtimeAt < RUNTIME_TTL_MS) return runtimeCache;
     runtimeCache = await discover();
     runtimeAt = Date.now();
     return runtimeCache;
@@ -5730,10 +5798,10 @@ function buildDeps(dirs, log) {
 
   const getClient = async () => {
     const rt = await getRuntime();
-    if (!rt.installed) throw new Error('not_installed');
+    if (!rt.installed) throw new ApiError('not_installed', '未检测到 Clash Verge Rev 的安装与配置目录', rt.channelHint);
+    // 配置里没写管道路径时用 mihomo 的默认名，否则 transport 会直接跳过管道这一档
     const candidate = { ...rt, controller: { pipe: rt.controller.pipe || '\\\\.\\pipe\\verge-mihomo', tcp: rt.controller.tcp } };
-    client = await ClashClient.connect(candidate, { timeoutMs: 3000 });
-    return client;
+    return ClashClient.connect(candidate, { timeoutMs: 3000 });
   };
 
   const getCvr = async () => {
@@ -5750,10 +5818,8 @@ function buildDeps(dirs, log) {
     return new SubscriptionRepo({ configDir: rt.configDir, dirs, client: liveClient });
   };
 
-  const getToolConfig = async () => {
-    const rt = await getRuntime();
-    return new ToolConfig({ npmrcPath: path.join(require('node:os').homedir(), '.npmrc'), backupDir: dirs.backups });
-  };
+  const getToolConfig = async () =>
+    new ToolConfig({ npmrcPath: path.join(os.homedir(), '.npmrc'), backupDir: dirs.backups });
 
   return {
     getRuntime,
@@ -5761,9 +5827,9 @@ function buildDeps(dirs, log) {
     getRepo,
     getCvr,
     getToolConfig,
+    // 不注入 curlRunner：真探测必须真的走网络，否则 proxy_diagnose 的结论没有意义
     getDiagnoseDeps: () => ({}),
     log,
-    dispose: () => { if (client) { client.close(); client = null; } },
   };
 }
 
@@ -5772,32 +5838,52 @@ function main() {
   const log = makeLogger(dirs);
   const deps = buildDeps(dirs, log);
   const tools = buildTools(deps);
-  const { callTool } = require('./tools');
 
   log(`server 启动，${tools.length} 个工具，数据目录 ${dirs.root}`);
 
-  // 协议帧只能写 stdout；任何 console.log 都会破坏协议，所以这里只保留 stdout 的 write 通道
+  // 协议帧只能写 stdout；任何 console.log 都会破坏协议，所以日志一律走 stderr 与文件
   const out = (msg) => {
     try { process.stdout.write(`${JSON.stringify(msg)}\n`); }
     catch (e) { log(`写 stdout 失败: ${e.message}`); }
   };
 
   const f = framer();
+  let pending = 0;
+  let stdinClosed = false;
+  let forceExit = null;
+
+  const finishIfIdle = () => {
+    if (!stdinClosed || pending > 0) return;
+    if (forceExit) clearTimeout(forceExit);
+    log.close();
+    // 回调在 stdout 缓冲冲干净时才触发；直接 process.exit 会把最后一帧截掉
+    process.stdout.write('', () => process.exit(0));
+  };
+
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => {
     for (const msg of f.push(chunk)) {
-      handleMessage(msg, {
+      pending += 1;
+      const work = handleMessage(msg, {
         tools,
         callTool: (name, args) => callTool(name, args, deps),
         log,
-      }).then((res) => { if (res) out(res); }, (e) => {
+      });
+      work.then((res) => { if (res) out(res); }, (e) => {
         log(`分派异常: ${e && e.stack ? e.stack : e}`);
         if (msg && msg.id !== undefined) out({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: '内部异常' } });
       });
+      work.finally(() => { pending -= 1; finishIfIdle(); });
     }
   });
-  process.stdin.on('end', () => { deps.dispose(); log('stdin 关闭，退出'); process.exit(0); });
-  process.on('SIGTERM', () => { deps.dispose(); process.exit(0); });
+  process.stdin.on('end', () => {
+    log('stdin 关闭，等待在途请求收尾');
+    stdinClosed = true;
+    // 在途工具（如 proxy_diagnose 的 curl 探测）有自己的超时，但客户端已走，不该陪着等到底
+    forceExit = setTimeout(() => { log('在途请求超时，强制退出'); process.exit(0); }, DRAIN_GRACE_MS);
+    finishIfIdle();
+  });
+  process.on('SIGTERM', () => process.exit(0));
   process.on('uncaughtException', (e) => log(`未捕获异常: ${e && e.stack ? e.stack : e}`));
   process.on('unhandledRejection', (e) => log(`未处理 rejection: ${e && e.stack ? e.stack : e}`));
 }
@@ -5806,6 +5892,103 @@ if (require.main === module) main();
 
 module.exports = { main, buildDeps, makeLogger };
 ```
+
+`test/index.test.js`（Step 8 的冒烟手跑一次就没了，这两条把同样的检查留在套件里，并且把数据目录、`APPDATA`、`HOME`、安装候选全塞进临时沙箱 —— 否则子进程会去连本机真实管道，测试结论随用户此刻开没开 Clash Verge 而变）：
+
+```js
+'use strict';
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const ENTRY = path.join(__dirname, '..', 'server', 'index.js');
+
+/**
+ * 沙箱：数据目录、APPDATA、HOME、安装候选全部指向空的临时目录。
+ * 少了这一层，子进程会去连本机真实管道，测试结论随用户此刻开没开 Clash Verge 而变。
+ */
+function sandboxEnv() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-index-'));
+  const empty = path.join(root, 'appdata');
+  fs.mkdirSync(path.join(empty, 'Home'), { recursive: true });
+  return {
+    root,
+    env: {
+      ...process.env,
+      QODER_VPN_PROXY_DATA: path.join(root, 'data'),
+      APPDATA: empty,
+      appdata: empty,
+      HOME: path.join(root, 'appdata', 'Home'),
+      USERPROFILE: path.join(root, 'appdata', 'Home'),
+      QVP_INSTALL_CANDIDATES: path.join(root, 'no-such-install'),
+    },
+  };
+}
+
+function runServer(frames, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [ENTRY], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, out, err }));
+    child.stdin.write(frames.join('\n') + '\n');
+    child.stdin.end();
+  });
+}
+
+const FRAMES = [
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}',
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"proxy_status","arguments":{}}}',
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"proxy_subscriptions","arguments":{}}}',
+];
+
+test('stdio 冒烟：stdin 关闭后在途请求仍收尾，stdout 只有合法 JSON 帧', async () => {
+  const { env } = sandboxEnv();
+  const { code, out, err } = await runServer(FRAMES, env);
+  assert.equal(code, 0, `退出码 ${code}，stderr: ${err}`);
+
+  const lines = out.trim().split('\n');
+  assert.equal(lines.length, 4, `stdout 应恰好 4 帧，实得 ${lines.length}：${out}`);
+  // 响应不按请求顺序回来（proxy_status 比 proxy_subscriptions 多做两轮通道探测），
+  // JSON-RPC 以 id 配对，客户端本来就该这么读
+  const byId = new Map(lines.map((l) => { const m = JSON.parse(l); return [m.id, m]; }));
+  assert.deepEqual([...byId.keys()].sort(), [1, 2, 3, 4]);
+  assert.equal(byId.get(1).result.serverInfo.name, 'qoder-vpn-proxy');
+  assert.equal(byId.get(2).result.tools.length, 17);
+
+  const status = JSON.parse(byId.get(3).result.content[0].text);
+  assert.equal(status.ok, true, 'proxy_status 报告状态，核心没跑也必须 ok');
+  assert.equal(status.data.installed, false);
+  assert.equal(status.data.core.reachable, false);
+
+  const subs = JSON.parse(byId.get(4).result.content[0].text);
+  assert.equal(subs.ok, false);
+  assert.equal(subs.kind, 'not_installed');
+
+  assert.match(err, /server 启动/);
+});
+
+test('每一行 stdout 都能独立解析，说明日志没有混进协议通道', async () => {
+  const { env } = sandboxEnv();
+  const { out } = await runServer(FRAMES.slice(0, 3), env);
+  for (const line of out.trim().split('\n')) {
+    assert.match(line, /^\{.*\}$/);
+    JSON.parse(line);
+  }
+});
+```
+
+落地 `index.js` 时这一步暴露了一个真 bug，处理记录在 Step 8。
 
 - [ ] **Step 8: 端到端跑一次协议（手工冒烟，不需要 CVR 在跑）**
 
@@ -5818,17 +6001,26 @@ cd qoder-vpn-proxy && printf '%s\n' \
  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"proxy_subscriptions","arguments":{}}}' \
  | node server/index.js 2>/dev/null | node -e "
 let b='';process.stdin.on('data',d=>b+=d).on('end',()=>{
-  const ms=b.trim().split('\n').map(JSON.parse);
-  console.log('帧数', ms.length);
-  console.log('serverInfo', JSON.stringify(ms[0].result.serverInfo));
-  console.log('工具数', ms[1].result.tools.length);
-  const st=JSON.parse(ms[2].result.content[0].text);
-  console.log('proxy_status ok=',st.ok,'running=',st.data&&st.data.running,'installed=',st.data&&st.data.installed);
-  console.log('subscriptions ok=',JSON.parse(ms[3].result.content[0].text).ok);
+  const lines=b.trim().split('\n');
+  const byId=new Map(lines.map(l=>{const m=JSON.parse(l);return [m.id,m];}));
+  console.log('帧数', lines.length);
+  console.log('serverInfo', JSON.stringify(byId.get(1).result.serverInfo));
+  console.log('工具数', byId.get(2).result.tools.length);
+  const st=JSON.parse(byId.get(3).result.content[0].text);
+  console.log('proxy_status ok=',st.ok,'running=',st.data.running,'installed=',st.data.installed,'core.reachable=',st.data.core.reachable);
+  const subs=JSON.parse(byId.get(4).result.content[0].text);
+  console.log('subscriptions ok=',subs.ok,'count=',subs.data&&subs.data.length);
+  console.log('stdout 全为合法 JSON:', lines.every(l=>{try{JSON.parse(l);return true}catch{return false}}));
 })"
 ```
 
 Expected: `帧数 4`、`工具数 17`、`proxy_status ok= true installed= true`；`running` 取决于用户此刻是否开着 Clash Verge（两种都算通过，因为 `proxy_status` 的例外约定）。**stdout 必须是 4 行合法 JSON、没有任何日志混入** —— 这一步就是验证那一条硬约束。
+
+按 `id` 取帧而不是按 `ms[2]/ms[3]` 的位置取：草稿假定响应按请求顺序回来，实测不成立 —— `proxy_status` 要在 `getRepo()` 之前多跑一轮通道探测，`proxy_subscriptions` 先回。JSON-RPC 以 id 配对，客户端本来就该这么读；服务端不为此加串行队列，因为一条 `proxy_diagnose` 能占住几十秒，排队会让 `proxy_status` 陪着卡住。**代价**：并发调用理论上能交错两次配置写；写路径本身有备份与原子改名，最后写入者胜，不产生半写文件，Task 17 的真机验收按顺序单条调用，不会撞到这个窗口。
+
+**实测（本机真跑，CVR 未运行）**：第一次 `帧数 2` —— 只回了 `initialize` 与 `tools/list`，两条 `tools/call` 消失。原因不是工具报错，是 `main()` 里 `stdin.on('end', () => process.exit(0))`：客户端一旦关 stdin 就立刻退出，把在途请求连响应一起杀掉。真 MCP 客户端不会关 stdin，所以这个 bug 只被冒烟暴露；但关 stdin 与"请求已处理完"没有必然关系，得改。落地改成：`pending` 计数归零后才收尾，且退出前用 `process.stdout.write('', cb)` 等缓冲冲干净（直接 `process.exit` 会把最后一帧截断），同时关掉日志文件流（不然那个 ref 会让事件循环永不空转、进程挂住不退），再加 15 秒强制上限兜住"在途工具自己有更长超时"的情形。
+
+改完后：`帧数 4`、`工具数 17`、`proxy_status ok= true running= false installed= true core.reachable= false`、`subscriptions ok= true count= 1`（`count=1` 是本机 `profiles.yaml` 里那条 `remote` 订阅，与 spec §2 的盘点一致）、`stdout 全为合法 JSON: true`。沙箱版同样检查已经固化成 `test/index.test.js` 的两条，回归不会再靠手跑。
 
 - [ ] **Step 9: 全量测试与提交**
 
@@ -5837,6 +6029,8 @@ node --test
 git add qoder-vpn-proxy/server qoder-vpn-proxy/test
 git commit -m "feat: MCP stdio 服务端与 17 个工具接线"
 ```
+
+Expected: `# tests 144`（Task 14 收尾时 125，本任务净增 19：protocol 8 + tools 9 + index 2），`# fail 0`。提交前跑一次凭据 grep：`grep -rnE "<needle-1>|<needle-2>|<needle-3>|<needle-4>|示例机场" qoder-vpn-proxy/` 必须无输出。
 
 ---
 
