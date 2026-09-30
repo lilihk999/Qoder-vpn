@@ -68,14 +68,19 @@ qoder-vpn-proxy/
 │   ├── clash-client.js            # mihomo REST 语义方法
 │   ├── subscription.js            # UA 门控订阅抓取、userinfo 解析、格式嗅探（无状态）
 │   ├── subscriptions.js           # 订阅仓库：增/改/删/切换 + 与 CVR profiles.yaml 双向同步
+│   ├── profilesYaml.js            # profiles.yaml 外科式文本编辑（parse/setUrl/appendItem/removeItem/setCurrent）
 │   ├── store.js                   # 插件数据目录读写（subscriptions.json、备份、.trash）
 │   ├── env.js                     # 代理环境变量块与 NO_PROXY 计算
+│   ├── toolconfig.js              # ~/.npmrc 与 git 全局配置的写入/还原/状态
 │   ├── diagnose.js                # 直连 vs 经代理 对比探测
 │   ├── cvr-config.js              # verge.yaml 备份/改写/还原、CVR 进程启停
 │   ├── redact.js                  # token 与节点凭据脱敏
 │   └── tools.js                   # 工具 schema 定义 + 分派表
 ├── skills/vpn-proxy/SKILL.md      # 教 agent 何时用哪个工具、失败如何解读
-├── hooks/session-start.js         # 写入会话代理环境变量（主路径，需验证）
+├── hooks/
+│   ├── hooks.json                 # {"hooks":{"SessionStart":[{matcher,"hooks":[{type:"command",command}]}]}}
+│   ├── run-hook.cmd               # cmd/bash 双语种包装器（沿用已验证的 superpowers 写法）
+│   └── session-start              # 探到代理可连时输出 additionalContext，否则静默
 ├── test/
 │   ├── fake-mihomo.js             # 桩化 mihomo REST 的本地 TCP+命名管道服务端
 │   ├── transport.test.js
@@ -138,7 +143,7 @@ Transport = {
 
 `env.js` / `diagnose.js` / `cvr-config.js` 各自独立，只依赖上述层。
 
-### 3.3 MCP 工具集（16 个）
+### 3.3 MCP 工具集（17 个）
 
 所有工具返回 `{ok: true, data}` 或 `{ok: false, kind, message, hint}`。所有输出经 `redact.js` 过滤。
 
@@ -151,7 +156,8 @@ Transport = {
 | `proxy_nodes` | `{group?}` | 代理组列表、每组 `all[]`/`now`/`history`，**仅节点名，不含任何服务器地址或密钥** |
 | `proxy_select` | `{group, target}` 或 `{mode: "rule"\|"global"\|"direct"}` | 切换结果 + 切换后 `now` 确认 |
 | `proxy_test` | `{group?, proxy?, url?, timeout?}` | 逐节点真实 TCP+HTTPS 延迟（`/proxies/{name}/delay`），排序返回，标注超时/失败 |
-| `proxy_env` | `{target?: "shell"\|"npm"\|"git"\|"pip"}` | 可直接使用的 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 文本块，含对应工具的专用命令（如 `git config --global http.proxy`） |
+| `proxy_env` | `{target?: "shell"\|"npm"\|"git"\|"pip"}` | 可直接使用的 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` 文本块，含对应工具的专用命令；端口取自 discovery，不硬编码 |
+| `proxy_toolconfig` | `{action: "apply"\|"revert"\|"status", target?: "npm"\|"git"}` | 写/还原用户级 `~/.npmrc` 代理与 `git config --global http.<github>.proxy`；apply 前备份原文件，status 回显当前生效项与是否由插件写入 |
 | `proxy_subscriptions` | 无 | 列出全部订阅：名称、脱敏 url、是否当前激活、节点数、流量与到期、最后更新时间、来源（`cvr`/`plugin`）、备注 |
 | `proxy_subscription_add` | `{url, name?, remark?, activate?: bool, autoUpdate?: bool}` | 带正确 UA 抓取 → 校验返回的是 YAML/base64 而非 HTML → 生成 uid → 写 profile 与注册表 → 可选激活 → 返回该订阅条目 |
 | `proxy_subscription_edit` | `{uid, url?, name?, remark?, autoUpdate?, updateInterval?}` | 修改已有订阅的链接（**token 轮换/换订阅地址**用）、显示名或更新策略；改 url 时自动重抓并校验 |
@@ -163,28 +169,34 @@ Transport = {
 
 `proxy_enable_external_control` 不单列为工具，作为 `channel_unavailable` 的 `hint` 内容，需要用户显式二次确认才由 `proxy_core_start` 顺带完成。
 
-### 3.4 让 Qoder 实际走代理：两条路径
+### 3.4 让 Qoder 实际走代理
 
-**主路径（SessionStart hook）**
+**先记一条被推翻的假设（2026-09-30 实测）。** 原设想用 SessionStart hook 往 `~/.qoder/session-env/<会话UUID>/sessionstart-hook-N.sh` 写 `export HTTP_PROXY=...` 来注入环境。读了 superpowers 的 hook 实现后确认这是错的：该 `.sh` 文件由 Qoder 自己创建且为空，superpowers 的 `session-start.cjs` 只做一件事——向 stdout 输出
+`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`。
+本会话开头收到的那段 "Workspace search routing" 文本正是这条通道的产物，因此 **SessionStart 能确定影响的是"注入给 agent 的提示"，不是 shell 环境**。插件不承诺自动 export 环境变量。
 
-`hooks/session-start.js` 在会话启动时向 `~/.qoder/session-env/<会话UUID>/sessionstart-hook-1.sh` 追加：
+生效路径按可靠性排序：
 
-```sh
-export HTTP_PROXY=http://127.0.0.1:7897
-export HTTPS_PROXY=http://127.0.0.1:7897
-export ALL_PROXY=socks5://127.0.0.1:7897
-export NO_PROXY="127.0.0.1,localhost,::1,10.0.0.0/8,192.168.0.0/16"
-```
+**A. 工具级持久配置（真正生效，不依赖 agent 听话）**
 
-实际值由 `env.js` 按 target 计算——curl 与 npm/git 对 `NO_PROXY` 的通配与 CIDR 支持并不一致，故每类工具产出各自适配的写法，不共用一个字面量。
+`proxy_toolconfig`（`action: "apply" | "revert" | "status"`，`target?: "npm" | "git"`）写用户级配置：
 
-这一路径带一个**必须在实现初期验证的假设**：hook 产出的内容是否真被 Bash 工具 source 进环境。验证方式：在 hook 里写 `export QODER_PROXY_PROBE=1`，紧接下一轮 Bash 读 `$QODER_PROXY_PROBE`。验证不通过即判定主路径不可用，不得凭猜测声称成功。
+- npm：在 `~/.npmrc` 追加 `proxy=` / `https-proxy=`（`registry.npmjs.org` 走代理），写入前先备份原文件。
+- git：`git config --global http.https://github.com.proxy http://127.0.0.1:7897`。**按域名前缀配置**，而不是 `http.proxy` 全局项，这样只影响 GitHub，国内站点与内网仓库不变道。
 
-**兜底路径（若 hook 不注入）**
+这两处都是用户级、可逐条还原、不影响浏览器与游戏，符合 §3.5 的 `scope=session` 语义（作用域是"这套工具链"，不是"整机"）。
 
-由 `skills/vpn-proxy/SKILL.md` 规定：agent 在发起网络请求的命令前内联代理变量（`HTTP_PROXY=... HTTPS_PROXY=... npm i`），并通过 `proxy_env` 的 `target` 参数取对应片段。同时对 `npm`/`git` 提供一次性配置命令，把代理写进各自的用户级配置，长期有效且不影响其他应用。
+**B. SessionStart 提示注入（覆盖 curl/pip/WebFetch 等无常驻配置的场景）**
 
-两条路径都在设计内，验证结果只决定默认，不推翻架构。
+`hooks/session-start` 仅在探测到本地代理端口实际可连通时输出 `additionalContext`，内容是一段简短指令：可用代理地址、`NO_PROXY` 建议值，以及"需要联网的命令请内联 `HTTP_PROXY=... HTTPS_PROXY=... <cmd>`"。探测不到代理时**不输出任何内容**，避免在 Clash Verge 关闭时给每个会话灌入无用且会引发 `connection refused` 的提示。
+
+**C. 按需取用**
+
+`proxy_env` 依旧提供 `shell`/`npm`/`git`/`pip` 四种 target 的现成片段，agent 可在单次调用中内联使用。
+
+**D. 待验证的更优路径**
+
+`PreToolUse` hook 若支持 `updatedInput` 覆盖 Bash 命令，则可在代理可用时透明地为联网命令补上代理前缀，无需 agent 配合。该能力是否被 Qoder 支持**尚未验证**，列为实现计划第 1 个任务的探针项；验证通过才采用，不通过则停留在 A+B+C。
 
 ### 3.5 作用域与安全决策（用户已确认）
 
@@ -238,28 +250,33 @@ export NO_PROXY="127.0.0.1,localhost,::1,10.0.0.0/8,192.168.0.0/16"
 1. `proxy_diagnose` 输出中，`github.com` 从"直连超时"变为"经代理 HTTP 200"，且同轮 `proxy_status` 显示 `enable_system_proxy` 仍为关闭（证明未影响整机）。
 2. 在 Qoder 会话内 `git clone https://github.com/sindresorhus/got` 与 `npm view react dist-tags` 实际成功。
 3. 浏览器等其他应用行为不变（系统代理仍关闭，注册表 ProxyEnable 未被设置）。
-4. 16 个工具全部可用且错误分类正确；关闭 CVR 后调用工具返回 `core_not_running` + 修复提示，而非崩溃。
+4. 17 个工具全部可用且错误分类正确；关闭 CVR 后调用工具返回 `core_not_running` + 修复提示，而非崩溃。
 5. 订阅可自主维护：`proxy_subscription_add` 加一条新链接后能立即被 `proxy_subscriptions` 列出、`proxy_subscription_update` 刷新成功、`proxy_subscription_activate` 切过去并让 mihomo 实际生效、`proxy_subscription_remove` 删除后可从 `.trash` 还原；改 url（token 轮换）后旧 profile 不被破坏。
-6. 全程对话与日志中不出现订阅 token 或节点凭据。
-7. `proxy_restore_config` 后 `%APPDATA%` 的 `verge.yaml` 与 `profiles.yaml` 与备份前逐字节一致。
+6. `proxy_toolconfig` apply 后，**不需要 agent 主动加前缀**，`npm view react dist-tags` 与 `git ls-remote https://github.com/sindresorhus/got` 直接成功；revert 后 `~/.npmrc` 与 git 全局配置恢复到与备份一致（`git config --global --get-regexp '^http\.' ` 为空）。
+7. 全程对话与日志中不出现订阅 token 或节点凭据。
+8. `proxy_restore_config` 后 `%APPDATA%` 的 `verge.yaml` 与 `profiles.yaml` 与备份前逐字节一致。
+9. Clash Verge 未运行时，SessionStart hook 不产生任何 `additionalContext`（新会话开头看不到代理提示）。
 
 ## 7. 实现顺序
 
-0. **风险验证**：启动 CVR，实测命名管道能否完成 HTTP 握手（决定默认通道）。注意此步会连带开启系统代理，验证后立即还原并记录现象。
-1. hook 注入可行性验证（`QODER_PROXY_PROBE` 实验），决定 §3.4 走主路径还是兜底。
+0. **命名管道探针**：启动 CVR，实测 `http.request({socketPath})` 能否完成 mihomo REST 握手（决定默认通道）。此步会连带开启系统代理，验证后立即还原并记录现象。
+1. **hook 能力探针**：确认 SessionStart 的 `additionalContext` 注入生效，并测 `PreToolUse` 是否支持 `updatedInput` 改写 Bash 命令（决定 §3.4 是否需要 D 路径）。
 2. `redact.js` + `env.js` + `subscription.js` 纯函数与单测（可完全离线开发）。
 3. `transport.js` + `fake-mihomo.js` + 传输层测试。
 4. `discovery.js` + `clash-client.js`。
 5. `cvr-config.js`（备份/改写/还原 + 进程启停）。
-6. `store.js` + `subscriptions.js`（订阅仓库 CRUD 与 profiles.yaml 双向同步）+ 沙箱测试。
-7. `tools.js` + `protocol.js` + `index.js`，打通 MCP。
-8. 插件清单 `plugin.json` / `mcp.json` / `SKILL.md`。
-9. 安装注册：拷入 `~/.qoder/plugins/cache/local/qoder-vpn-proxy/0.1.0`，更新 `installed_plugins_v2.json` 与 `settings.json` 的 `enabledPlugins`。
-10. 真实 E2E 与 §6 验收，并把「示例机场」的订阅链接按第 2 节说明更新为新地址。
+6. `profilesYaml.js` + `store.js` + `subscriptions.js`（订阅仓库 CRUD 与 profiles.yaml 外科式同步）+ 沙箱测试。
+7. `toolconfig.js`（npmrc / git 配置读写与还原）+ 测试。
+8. `tools.js` + `protocol.js` + `index.js`，打通 MCP。
+9. 插件清单 `plugin.json`（含 `hooks` 字段）/ `mcp.json` / `hooks.json` + `session-start` / `SKILL.md`。
+10. 安装注册：拷入 `~/.qoder/plugins/cache/local/qoder-vpn-proxy/0.1.0`，更新 `installed_plugins_v2.json` 与 `settings.json` 的 `enabledPlugins`。
+11. 真实 E2E 与 §6 验收，并把「示例机场」的订阅链接按第 2 节说明更新为新地址。
 
 ## 8. 未验证项（实现时须标注）
 
 - Qoder 桌面端自身的模型请求是否读取 WinINET 系统代理。**不确定**，由 `proxy_diagnose` 在实测后给出结论。
-- `openapi.qoder.com` 在本机 DNS 解析失败，真实模型网关域名待确认。
-- 命名管道的 mihomo HTTP 支持程度（§7.0 会给出结论；若不支持则默认通道改为 TCP，需用户确认开启外部控制）。
+- 命名管道的 mihomo HTTP 支持程度（§7.0 给出结论；若不支持则默认通道改为 TCP，需用户确认开启外部控制）。
+- `PreToolUse` 是否支持 `updatedInput`（§7.1）。不支持则接受"依赖 agent 遵循提示 + 工具级持久配置"的组合。
 - 新订阅链接（`SUBPATH`）返回的节点集合与旧 profile 是否一致，更新后需对比节点数。
+- CVR 运行时对 `profiles.yaml` 的回写是否会覆盖插件写入（§4 的写后校验会给出结论）。
+- 注意：`~/.npmrc` 与 git 全局配置属用户级持久改动，虽可还原，仍需 `proxy_toolconfig` 的 `status` 与备份文件作为审计依据。
