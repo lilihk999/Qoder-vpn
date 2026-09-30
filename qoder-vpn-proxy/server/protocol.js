@@ -13,6 +13,7 @@ const INSTRUCTIONS = [
   '代理端口一律来自返回值，不要凭记忆写 7897。',
   '订阅地址是凭据：工具输出与日志里主机名、路径段、token 全部掩掉，只剩结构与 urlFingerprint；原始链接只在插件内部用于抓取与写 profiles.yaml。',
   '读结果别过头：proxy_diagnose 里 2xx 配 curl exit 28 是"通但被 max-time 截断"，该调大 timeoutMs 重跑，不是换节点；proxy_status 的 configDrift.dirty 只说明字节与最近一次插件备份不同，看不出是插件、CVR 还是用户改的。',
+  '每次 tools/call 都往数据目录 logs/calls.jsonl 落一行（时间、工具名、参数名、成败、kind、耗时；参数值一律不记）。"上一步到底做没做、报的什么错"先查 proxy_status 的 audit，别凭会话记忆；要它答"传的是哪条链接/哪个 uid"是答不出来的。',
 ].join(' ');
 
 function framer() {
