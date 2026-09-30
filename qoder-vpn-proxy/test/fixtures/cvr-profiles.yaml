@@ -1,0 +1,61 @@
+# Profiles Config for Clash Verge
+
+current: Rq14DVii2DNo
+items:
+- uid: Merge
+  type: merge
+  name: null
+  file: Merge.yaml
+  updated: 1787138083
+- uid: Script
+  type: script
+  name: null
+  file: Script.js
+  updated: 1787138083
+- uid: m9QGfYnAgICa
+  type: merge
+  name: null
+  file: m9QGfYnAgICa.yaml
+  updated: 1787371270
+- uid: sFD8EBpJ7JcY
+  type: script
+  name: null
+  file: sFD8EBpJ7JcY.js
+  updated: 1787371270
+- uid: rBAyEk3K4FWA
+  type: rules
+  name: null
+  file: rBAyEk3K4FWA.yaml
+  updated: 1787371270
+- uid: pcPEvR05flkq
+  type: proxies
+  name: null
+  file: pcPEvR05flkq.yaml
+  updated: 1787371270
+- uid: ga95A5AxsmDZ
+  type: groups
+  name: null
+  file: ga95A5AxsmDZ.yaml
+  updated: 1787371270
+- uid: Rq14DVii2DNo
+  type: remote
+  name: 测试订阅
+  file: Rq14DVii2DNo.yaml
+  url: https://panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER
+  selected:
+  - name: 测试订阅
+    now: TW 2 | v4
+  extra:
+    upload: 359591668
+    download: 53636662825
+    total: 64424509440
+    expire: 0
+  updated: 1790668363
+  option:
+    update_interval: 1440
+    allow_auto_update: true
+    merge: m9QGfYnAgICa
+    script: sFD8EBpJ7JcY
+    rules: rBAyEk3K4FWA
+    proxies: pcPEvR05flkq
+    groups: ga95A5AxsmDZ

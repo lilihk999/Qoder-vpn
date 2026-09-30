@@ -1264,7 +1264,7 @@ git commit -m "feat: transport 抽象(管道优先/TCP 兜底/auth_failed 与 ch
 - Consumes: 无（不依赖 transport）
 - Produces:
   - `CONFIG_DIR_NAME`、`FALLBACK_PIPE = '\\\\.\\pipe\\verge-mihomo'`、`DEFAULT_SECRET = 'set-your-secret'`
-  - `topScalar(text, key) -> string|null`（只认列 0 的 `key:`，缩进的嵌套键不得命中）
+  - `topScalar(text, key) -> string|null`（只认列 0 的 `key:`，缩进的嵌套键不得命中；空值与裸 `null`/`~` 一律 `null`）
   - `intOf(raw) -> number|null`、`boolOf(raw) -> boolean|null`、`nestedBool(text, parent, child) -> boolean|null`
   - `parseRuntimeYaml(text) -> {ports:{mixed,socks,http}, controller:{tcp,pipe}, secret, mode, tunEnabled}`
   - `parseVergeYaml(text) -> {enableExternalController, enableSystemProxy, enableTunMode, mixedPort, socksPort, httpPort, systemProxyBypass}`（键缺失时字段为 `null`，不猜默认值）
@@ -1311,7 +1311,16 @@ test('topScalar 处理引号、空串与缺失', () => {
   assert.equal(D.topScalar("external-controller: ''\n", 'external-controller'), null);
   assert.equal(D.topScalar('mixed-port: 7897\n', 'mixed-port'), '7897');
   assert.equal(D.topScalar('a: 1\n', 'missing'), null);
+  assert.equal(D.topScalar('a: null\n', 'a'), null, 'YAML 裸 null 等于没有值');
+  assert.equal(D.topScalar("a: 'null'\n", 'a'), 'null', '带引号的 null 是真字符串');
   assert.equal(D.topScalar('tun:\n  enable: false\n', 'enable'), null, '缩进行不能当顶层键');
+});
+
+test('nestedBool 顶格读子块', () => {
+  assert.equal(D.nestedBool('tun:\n  enable: false\n  stack: system\n', 'tun', 'enable'), false);
+  assert.equal(D.nestedBool('tun:\n  enable: true\n', 'tun', 'enable'), true);
+  assert.equal(D.nestedBool('tun: {}\n', 'tun', 'enable'), null);
+  assert.equal(D.nestedBool('interface-name: tun0\n', 'tun', 'enable'), null);
 });
 
 test('parseRuntimeYaml 取端口、双通道、secret、mode、tun', () => {
@@ -1332,6 +1341,7 @@ test('parseVergeYaml 读开关而不猜默认', () => {
   assert.equal(s.enableSystemProxy, true);
   assert.equal(s.enableTunMode, false);
   assert.equal(s.mixedPort, 7897);
+  assert.equal(s.systemProxyBypass, null, '裸 null 不能变成字符串 "null"');
   const empty = D.parseVergeYaml('# nothing\n');
   assert.equal(empty.enableExternalController, null);
   assert.equal(empty.mixedPort, null);
@@ -1372,13 +1382,20 @@ test('parseProfilesYaml 认出 current、全部 item 与类型差异', () => {
 
 test('discover：目录不存在时 installed:false 且 hint 可执行', async () => {
   const rt = await D.discover({
-    env: { APPDATA: sandbox('no-such-dir'), ProgramFiles: sandbox('no-such-dir') },
+    env: {
+      APPDATA: sandbox('no-such-dir'),
+      ProgramFiles: sandbox('no-such-dir'),
+      QVP_CONFIG_DIR: '',
+      // 必须显式覆盖安装目录候选：本机 C:\Program Files\Clash Verge 真实存在，
+      // 留着硬编码兜底候选会让这条测试只在"没装 CVR 的机器"上过。
+      QVP_INSTALL_CANDIDATES: sandbox('no-such-dir'),
+    },
     exec: async () => ({ stdout: '' }),
   });
   assert.equal(rt.installed, false);
   assert.equal(rt.running, false);
   assert.match(rt.channelHint, /安装/);
-  assert.ok(rt.warnings.length > 0);
+  assert.ok(rt.warnings.length > 0, '配置目录找不到时必须留 warning，否则调用方看不出为什么失败');
 });
 
 test('discover：真实形态沙箱组装 Runtime', async () => {
@@ -1391,7 +1408,11 @@ test('discover：真实形态沙箱组装 Runtime', async () => {
   fs.writeFileSync(path.join(appdata, 'profiles.yaml'), fx('cvr-profiles.yaml'));
 
   const rt = await D.discover({
-    env: { APPDATA: path.join(dir, 'Roaming'), ProgramFiles: path.join(dir, 'PF') },
+    env: {
+      APPDATA: path.join(dir, 'Roaming'),
+      ProgramFiles: path.join(dir, 'PF'),
+      QVP_INSTALL_CANDIDATES: path.join(dir, 'PF'),
+    },
     exec: async () => ({ stdout: 'clash-verge.exe  1234 Console  1  50,000 K\n' }),
   });
   assert.equal(rt.configDir, appdata);
@@ -1447,6 +1468,10 @@ const DEFAULT_SECRET = 'set-your-secret';
 const CONFIG_SOURCES = ['config.yaml', 'clash-verge.yaml', 'clash-verge-check.yaml'];
 
 function installCandidates(env) {
+  // 显式给定候选时只用给定值：测试必须与"这台机器装没装 CVR"无关
+  if (env.QVP_INSTALL_CANDIDATES) {
+    return env.QVP_INSTALL_CANDIDATES.split(path.delimiter).filter(Boolean);
+  }
   const list = [];
   if (env.QVP_INSTALL_DIR) list.push(env.QVP_INSTALL_DIR);
   if (env.ProgramFiles) list.push(path.join(env.ProgramFiles, 'Clash Verge'));
@@ -1456,20 +1481,33 @@ function installCandidates(env) {
   return list;
 }
 
+function scalarOf(raw) {
+  const v = String(raw).trim();
+  const quoted = v.length >= 2
+    && ((v[0] === "'" && v[v.length - 1] === "'") || (v[0] === '"' && v[v.length - 1] === '"'));
+  const out = quoted ? v.slice(1, -1) : v;
+  if (out === '') return null;
+  // 未加引号的 null / ~ 在 YAML 里就是"没有值"；保留字面量会让下游把 "null" 当成配置
+  if (!quoted && (out === 'null' || out === '~')) return null;
+  return out;
+}
+
 function topScalar(text, key) {
   const m = new RegExp(`^${key}:[ \\t]*(.*)$`, 'm').exec(text);
-  if (!m) return null;
-  let v = m[1].trim();
-  if (v.length >= 2 && ((v[0] === "'" && v[v.length - 1] === "'") || (v[0] === '"' && v[v.length - 1] === '"'))) {
-    v = v.slice(1, -1);
-  }
-  return v === '' ? null : v;
+  return m ? scalarOf(m[1]) : null;
 }
 
 function intOf(raw) {
   if (raw === null || raw === undefined || raw === '') return null;
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
+}
+
+// intOf 是端口校验，上限 65535；时间戳等普通整数用它一律变 null
+function numOf(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isInteger(n) ? n : null;
 }
 
 function boolOf(raw) {
@@ -1483,7 +1521,12 @@ function boolOf(raw) {
 function nestedBool(text, parent, child) {
   const block = new RegExp(`^${parent}:[ \\t]*\\n((?:[ \\t]+.*(?:\\r?\\n|$))+)`, 'm').exec(text);
   if (!block) return null;
-  return boolOf(topScalar(block[1], child));
+  const lines = block[1].split(/\r?\n/).filter((l) => l.trim() !== '');
+  if (!lines.length) return null;
+  // topScalar 只认列 0 的键，所以按第一行的缩进把子块整体顶格；
+  // 更深层的键仍带着缩进，不会被 child 误命中。
+  const indent = (lines[0].match(/^[ \t]+/) || [''])[0].length;
+  return boolOf(topScalar(lines.map((l) => l.slice(indent)).join('\n'), child));
 }
 
 function parseRuntimeYaml(text) {
@@ -1542,21 +1585,28 @@ function parseProfilesYaml(text) {
   let block = null;
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i];
-    if (/^- /.test(line)) { block = {}; blocks.push(block); continue; }
     if (/^[^\s-]/.test(line) && line.trim() !== '') break;
+    // CVR 把每项的第一个字段写在破折号同一行（`- uid: Merge`），这一行同样是键值对
+    let m = /^-\s+([\w-]+):[ \t]*(.*)$/.exec(line);
+    if (m) {
+      block = { [m[1]]: scalarOf(m[2]) };
+      blocks.push(block);
+      continue;
+    }
+    if (/^-\s*$/.test(line)) { block = {}; blocks.push(block); continue; }
     if (!block) continue;
-    const m = /^ {2}([\w-]+):[ \t]*(.*)$/.exec(line);
-    if (m && block[m[1]] === undefined) block[m[1]] = m[2] === '' ? null : m[2].replace(/^['"]|['"]$/g, '');
+    m = /^ {2}([\w-]+):[ \t]*(.*)$/.exec(line);
+    if (m && block[m[1]] === undefined) block[m[1]] = scalarOf(m[2]);
   }
   return {
     current,
     items: blocks.map((b) => ({
       uid: b.uid ?? null,
       type: b.type ?? null,
-      name: !b.name || b.name === 'null' ? null : b.name,
+      name: b.name ?? null,
       file: b.file ?? null,
       url: b.url ?? null,
-      updated: intOf(b.updated),
+      updated: numOf(b.updated),
     })),
   };
 }
@@ -1565,6 +1615,7 @@ function isFile(fsImpl, p) { try { return Boolean(p) && fsImpl.statSync(p).isFil
 function isDir(fsImpl, p) { try { return Boolean(p) && fsImpl.statSync(p).isDirectory(); } catch { return false; } }
 
 function resolveConfigDir(env = process.env, fsImpl = fs) {
+  if (env.QVP_CONFIG_DIR && isDir(fsImpl, env.QVP_CONFIG_DIR)) return env.QVP_CONFIG_DIR;
   const appdata = env.APPDATA || env.appdata;
   if (appdata) {
     const candidate = path.join(appdata, CONFIG_DIR_NAME);
@@ -1573,7 +1624,7 @@ function resolveConfigDir(env = process.env, fsImpl = fs) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
   const unix = path.join(home, '.config', CONFIG_DIR_NAME);
   if (isDir(fsImpl, unix)) return unix;
-  return env.QVP_CONFIG_DIR && isDir(fsImpl, env.QVP_CONFIG_DIR) ? env.QVP_CONFIG_DIR : null;
+  return null;
 }
 
 function resolveInstallDir(env = process.env, fsImpl = fs) {
@@ -1631,6 +1682,9 @@ async function discover({ env = process.env, fsImpl = fs, exec = execFileAsync }
       try { profiles = parseProfilesYaml(fsImpl.readFileSync(profilesPath, 'utf8')); }
       catch (e) { warnings.push(`profiles.yaml 解析失败: ${e.code || e.message}`); }
     } else warnings.push('profiles.yaml 缺失，订阅清单为空');
+  } else {
+    // configDir 为 null 时也必须留 warning，否则调用方看不出为什么什么都没读到
+    warnings.push(`未找到配置目录（APPDATA=${env.APPDATA || '空'} 下的 ${CONFIG_DIR_NAME}，也没有 QVP_CONFIG_DIR）`);
   }
 
   const running = await isRunning(exec);
@@ -1667,7 +1721,24 @@ module.exports = {
 - [ ] **Step 5: 跑测试确认失败/通过**
 
 Run: `node --test test/discovery.test.js`
-Expected: PASS（9 个测试）。若 `parseProfilesYaml` 少算了 items，多半是 `extra:` / `option:` 这类嵌套块里的 4 空格行被误认成新字段 —— 正则里的 `^ {2}` 已限定两层缩进，且 `block[m[1]] === undefined` 保证同名键只取第一次出现。
+Expected: PASS（10 个测试）。
+
+实机跑出来踩了六个坑，都已改进上面的代码，回写在此以免复刻：
+
+1. **`nestedBool` 原来必返回 `null`**：它把缩进的子块直接喂给 `topScalar`，而 `topScalar` 只认列 0
+   的键（Task 8 的第一条测试就是这么要求的）。必须按子块第一行的公共缩进顶格后再查；只剥公共
+   缩进，更深层的键才不会被 `child` 误命中。
+2. **`parseProfilesYaml` 丢了每项的 `uid`**：CVR 写的是 `- uid: Merge`，第一项和破折号同行，
+   原来的循环遇到 `^- ` 只开新块就 `continue`，把这一行的键值对扔掉了。
+3. **`updated` 用了 `intOf` 恒为 `null`**：`intOf` 是端口校验，带 `<= 65535` 上限；时间戳要用 `numOf`。
+4. **裸 `null` 变成字符串 `"null"`**：真机 `verge.yaml` 第 30 行就是 `system_proxy_bypass: null`，
+   原 `topScalar` 只处理空串。改成 `scalarOf` 后，未加引号的 `null` / `~` 视为无值，带引号的
+   `'null'` 仍是字符串。`parseProfilesYaml` 里那句 `b.name === 'null'` 的特判因此可以删掉。
+5. **测试必须与本机装没装 CVR 无关**：`C:\Program Files\Clash Verge` 在这台机器上真实存在，
+   所以"未安装"的两条测试改用 `QVP_INSTALL_CANDIDATES`（`path.delimiter` 分隔）显式给定候选；
+   同时 `QVP_CONFIG_DIR` 提到 `resolveConfigDir` 的第一位，覆盖 APPDATA 指向真目录时仍能定向。
+6. **`configDir` 为 `null` 时原来不记 warning**：调用方只看到"什么都没读到"。补 else 分支，把
+   APPDATA 的实际值写进 warning。
 
 - [ ] **Step 6: 对真机跑一遍解析（只读，不改任何文件）**
 
