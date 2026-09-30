@@ -29,4 +29,5 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 `kind` 的 13 种取值与对应动作见 `hint` 字段。特别注意：
 - `channel_unavailable` → 先 `proxy_core_start`；仍然不行则**先征得用户同意**再调 `proxy_core_start(enableExternalControl: true)`（这是 spec 刻意的设计：开启外部控制不单独成工具，只在用户确认后由启动工具顺带完成）。
 - `profile_registry_desync` → Clash Verge 运行中会回写 `profiles.yaml`。先 `proxy_core_stop` 再重试订阅操作。
+- `proxy_subscription_activate` 返回 `needsRestart: true` → 注册表已经改对，但 mihomo（v1.19.25 起）没有 reload 端点，新节点还没进内存。要么 `proxy_core_stop` + `proxy_core_start`，要么让用户在 GUI 里点一下该订阅，别重复调用 activate。
 - `subscription_format_unexpected` → 机场按 UA 分流，或链接已失效；不是插件的 bug。
