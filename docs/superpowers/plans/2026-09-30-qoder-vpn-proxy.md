@@ -23,7 +23,7 @@
 - 写 `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\` 下任何文件（`verge.yaml`、`profiles.yaml`）之前，必须先做带时间戳的完整备份；备份失败则中止，不进入半改状态。
 - MCP stdio 服务端的 `process.stdout` 只写 JSON-RPC 帧。日志一律写 `stderr` 或插件数据目录文件，否则会破坏协议。
 - 面向用户的文案（工具 `description`、`hint`、`SKILL.md`、README）用中文。
-- 每个任务结束时 `node --test test/` 必须全绿，然后提交一次 git commit。
+- 每个任务结束时 `node --test` 必须全绿，然后提交一次 git commit。
 
 ## 文件结构
 
@@ -229,7 +229,7 @@ git add docs/superpowers/probes/02-hooks.md && git commit -m "probe: Qoder hook 
   "private": true,
   "type": "commonjs",
   "description": "识别并使用本机 Clash Verge Rev 代理的 Qoder 插件",
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test" }
 }
 ```
 
@@ -275,7 +275,7 @@ test('redactText 对 undefined 与数字安全', () => {
 
 - [ ] **Step 3: 跑测试确认失败**
 
-Run: `cd qoder-vpn-proxy && node --test test/`
+Run: `cd qoder-vpn-proxy && node --test`
 Expected: FAIL，`Cannot find module '../server/redact'`
 
 - [ ] **Step 4: 实现 redact.js**
@@ -344,7 +344,7 @@ module.exports = { ok, fail, ApiError, ENVELOPE_KINDS, toEnvelope };
 
 - [ ] **Step 6: 跑测试确认通过**
 
-Run: `node --test test/`
+Run: `node --test`
 Expected: PASS（5 个测试）
 
 - [ ] **Step 7: 提交**
@@ -759,7 +759,7 @@ test('管道可通、TCP 默认关', async () => {
   const fake = await startFake({ pipeName: 'qoder-vpn-proxy-selftest-a', port: 0, secret: 's3cret' });
   const viaPipe = await get({ socketPath: fake.pipeName, path: '/version', headers: { Host: 'localhost', Authorization: 'Bearer s3cret' } });
   assert.equal(viaPipe.status, 200);
-  assert.match(viaPipe.body, /META/);
+  assert.match(viaPipe.body, /meta/);
   await assert.rejects(get({ host: '127.0.0.1', port: fake.port, path: '/version' }), /ECONNREFUSED/);
   fake.setTcpEnabled(true);
   const viaTcp = await get({ host: '127.0.0.1', port: fake.port, path: '/version', headers: { Authorization: 'Bearer s3cret' } });
@@ -771,11 +771,18 @@ test('密钥不符返回 401；切换节点写回 state', async () => {
   const fake = await startFake({ pipeName: 'qoder-vpn-proxy-selftest-b', port: 0, secret: 'right' });
   const bad = await get({ socketPath: fake.pipeName, path: '/version', headers: { Host: 'localhost', Authorization: 'Bearer wrong' } });
   assert.equal(bad.status, 401);
-  await new Promise((res) => {
-    const r = http.request({ socketPath: fake.pipeName, path: '/proxies/节点选择', method: 'PUT', headers: { Host: 'localhost', Authorization: 'Bearer right', 'Content-Type': 'application/json' } }, (rr) => { rr.resume(); rr.on('end', res); });
+  // 组名是中文：Node 的 ClientRequest 拒绝未转义字符，必须 encodeURIComponent，
+  // 真实 mihomo 也收编码后的路径 —— Task 9 的客户端同样要这么做。
+  const putPath = '/proxies/' + encodeURIComponent('节点选择');
+  await new Promise((res, rej) => {
+    const r = http.request({ socketPath: fake.pipeName, path: putPath, method: 'PUT', headers: { Host: 'localhost', Authorization: 'Bearer right', 'Content-Type': 'application/json' } }, (rr) => { rr.resume(); rr.on('end', res); });
+    r.on('error', rej);
     r.end(JSON.stringify({ target: 'HK 3 | v4' }));
   });
   assert.equal(fake.state.proxies['节点选择'].now, 'HK 3 | v4');
+  const readBack = await get({ socketPath: fake.pipeName, path: putPath, headers: { Host: 'localhost', Authorization: 'Bearer right' } });
+  assert.equal(readBack.status, 200);
+  assert.match(readBack.body, /HK 3 \| v4/);
   await fake.close();
 });
 
@@ -825,13 +832,20 @@ function makeHandlers(state) {
       if (name === 'dead-node') return { status: 503, json: { message: `Test ${name} error: context deadline exceeded` } };
       return { status: 200, json: { delay: 120 + name.length } };
     }
-    if (/^\/proxies\//.test(p) && method === 'PUT') {
-      const g = p.split('/')[2];
-      const t = JSON.parse(body).target;
-      if (!g || !state.proxies[g]) return { status: 404, json: { message: 'proxy group not found' } };
-      if (!state.proxies[g].all.includes(t)) return { status: 503, json: { message: 'bad target' } };
-      state.proxies[g].now = t;
-      return { status: 204 };
+    if (/^\/proxies\//.test(p)) {
+      const g = decodeURIComponent(p.split('/')[2]);
+      const all = renderProxies(state);
+      if (method === 'GET') return all[g] ? { status: 200, json: all[g] } : { status: 404, json: { message: 'proxy not found' } };
+      if (method === 'PUT') {
+        if (!state.proxies[g]) return { status: 404, json: { message: 'proxy group not found' } };
+        const t = JSON.parse(body).target;
+        if (!state.proxies[g].all.includes(t)) return { status: 503, json: { message: 'bad target' } };
+        state.proxies[g].now = t;
+        return { status: 204 };
+      }
+    }
+    if (/^\/profiles\/[^/]+\/update$/.test(p) && method === 'POST') {
+      return { status: 200, json: { name: p.split('/')[2], updated: true, proxies: renderProxies(state) } };
     }
     return { status: 404, json: { message: 'not found' } };
   };
@@ -870,9 +884,10 @@ async function startFake({ pipeName, port = 0, secret = 'set-your-secret', mixed
     chosen = probe.address().port;
     await new Promise((res) => probe.close(res));
   }
-  const tcpReal = http.createServer(dispatch);
-  if (tcpEnabled) await new Promise((res) => tcpReal.listen(chosen, '127.0.0.1', res));
-  const pipeSrv = net.createServer(dispatch);
+  // 命名管道同样要跑 HTTP 语义：必须是 http.Server，net.Server 拿不到 req.url/res.writeHead
+  const tcpSrv = http.createServer(dispatch);
+  const pipeSrv = http.createServer(dispatch);
+  if (tcpEnabled) await new Promise((res) => tcpSrv.listen(chosen, '127.0.0.1', res));
   await new Promise((res, rej) => { pipeSrv.once('error', rej); pipeSrv.listen(fullPipe, res); });
   servers.push(pipeSrv);
 
@@ -883,12 +898,12 @@ async function startFake({ pipeName, port = 0, secret = 'set-your-secret', mixed
     hits: state.hits,
     async setTcpEnabled(v) {
       state.tcpEnabled = v;
-      if (v && !tcpReal.listening) await new Promise((res) => tcpReal.listen(chosen, '127.0.0.1', res));
-      if (!v && tcpReal.listening) await new Promise((res) => tcpReal.close(res));
+      if (v && !tcpSrv.listening) await new Promise((res) => tcpSrv.listen(chosen, '127.0.0.1', res));
+      if (!v && tcpSrv.listening) await new Promise((res) => tcpSrv.close(res));
     },
     async close() {
       for (const s of servers) await new Promise((r) => s.close(r));
-      if (tcpReal.listening) await new Promise((r) => tcpReal.close(r));
+      if (tcpSrv.listening) await new Promise((r) => tcpSrv.close(r));
     },
   };
 }
@@ -899,12 +914,22 @@ module.exports = { startFake };
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `node --test test/fake-mihomo.test.js`
-Expected: PASS（3 个测试）。若报 `proxy group not found`，检查 `PROXIES` 的组名与断言里的 `节点选择` 是否逐字符一致（全角字符易被编辑器改错）。若 `ECONNREFUSED` 断言不稳定，说明 `port` 传的不是 `0` —— 必须让 fake 自己探空闲端口。
+Expected: PASS（3 个测试）。三条实测踩过的坑：
+
+- 管道服务端必须用 `http.createServer`。写成 `net.createServer(dispatch)` 时 `dispatch` 拿到的是
+  Socket，`req.url`/`res.writeHead` 都不存在，每个管道请求都抛 TypeError。
+- 中文组名要 `encodeURIComponent`。`http.request({ path: '/proxies/节点选择' })` 直接抛
+  `ERR_UNESCAPED_CHARACTERS`；这个错发生在测试体内、`fake.close()` 之前，泄漏的管道服务端会让
+  `node --test` 一直不退出（表现为"卡死"而不是"失败"）。Task 7/9 的客户端同样要编码路径。
+- 若报 `proxy group not found`，检查 `PROXIES` 的组名与断言里的 `节点选择` 是否逐字符一致（全角字符易被编辑器改错）。
+  若 `ECONNREFUSED` 断言不稳定，说明 `port` 传的不是 `0` —— 必须让 fake 自己探空闲端口。
 
 - [ ] **Step 5: 跑全量测试**
 
-Run: `node --test test/`
-Expected: PASS，Task 3–6 的全部测试绿。
+Run: `node --test`
+Expected: PASS，Task 3–6 的全部测试绿。注意 Node 会把 `test/` 目录下的**每个** `.js` 都当测试文件收集，
+所以 `test/fake-mihomo.js` 这种纯导出的辅助文件也会占一条 `ok`（本任务后总数 = 断言测试数 + 1）。
+以后核对数量时把这条算进去，不要误以为某个测试消失了。
 
 - [ ] **Step 6: 提交**
 
@@ -1198,7 +1223,7 @@ Expected: PASS（8 个测试）。"TCP 兜底"那条传的是 `controller: {pipe
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/transport.js qoder-vpn-proxy/test/transport.test.js
 git commit -m "feat: transport 抽象(管道优先/TCP 兜底/auth_failed 与 channel_unavailable 分流)"
 ```
@@ -1966,7 +1991,7 @@ Expected: 两个文件都 PASS（fake 3 个 + client 9 个）。Task 6 那条用
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/clash-client.js qoder-vpn-proxy/test
 git commit -m "feat: clash-client mihomo REST 语义层(切换后回读确认/坏节点归 timeout)"
 ```
@@ -2481,7 +2506,7 @@ Expected: PASS（14 个测试）。
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/cvr-config.js qoder-vpn-proxy/test/cvr-config.test.js
 git commit -m "feat: cvr-config 备份/压制系统代理/启停 CVR(失败即回滚，不留半改)"
 ```
@@ -2936,7 +2961,7 @@ for (const [n,f] of [['setCurrent',()=>P.setCurrent(raw,'Merge')],['append',()=>
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/profilesYaml.js qoder-vpn-proxy/test/profilesYaml.test.js
 git commit -m "feat: profilesYaml 外科式编辑(round-trip 恒等为主验收)"
 ```
@@ -3608,7 +3633,7 @@ Expected: PASS（13 个测试）。同时删掉 Step 5 里那个错误的 `readP
 - [ ] **Step 7: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/store.js qoder-vpn-proxy/server/subscriptions.js qoder-vpn-proxy/test
 git commit -m "feat: store 数据目录与订阅仓库(CRUD/写后校验/desync 回滚)"
 ```
@@ -4032,7 +4057,7 @@ Expected: PASS（10 个测试）。`status 三种状态` 那条如果 `foreign` 
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/toolconfig.js qoder-vpn-proxy/test/toolconfig.test.js
 git commit -m "feat: toolconfig npmrc 托管块与 git 域名代理的 apply/revert/status"
 ```
@@ -4349,7 +4374,7 @@ Expected: 与 spec §2 基线一致 —— GitHub 两行 FAIL（超时）、npm/
 - [ ] **Step 6: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/diagnose.js qoder-vpn-proxy/test/diagnose.test.js
 git commit -m "feat: diagnose 直连与经代理对比探测(含 --noproxy 隔离环境变量)"
 ```
@@ -5360,7 +5385,7 @@ Expected: `帧数 4`、`工具数 17`、`proxy_status ok= true installed= true`�
 - [ ] **Step 9: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server qoder-vpn-proxy/test
 git commit -m "feat: MCP stdio 服务端与 17 个工具接线"
 ```
