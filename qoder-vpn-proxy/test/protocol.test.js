@@ -73,3 +73,16 @@ test('handler 抛异常时回 -32603 而不是让服务端崩', async () => {
   const res = await handleMessage({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'proxy_status', arguments: {} } }, boom);
   assert.equal(res.error.code, -32603);
 });
+
+test('内部异常的日志行先过脱敏：订阅地址不进 mcp.log', async () => {
+  const lines = [];
+  const boom = {
+    tools: stubTools,
+    log: (l) => lines.push(String(l)),
+    callTool: async () => { throw new Error('抓取 https://panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER 失败'); },
+  };
+  const res = await handleMessage({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'proxy_status', arguments: {} } }, boom);
+  assert.equal(res.error.code, -32603);
+  assert.ok(lines.length >= 1, '异常要留日志，否则无从排查');
+  assert.doesNotMatch(lines.join('\n'), /panel\.example\.invalid|SUBPATH|TOKEN_PLACEHOLDER/, '日志会落盘，异常栈里的订阅链接必须抹掉');
+});

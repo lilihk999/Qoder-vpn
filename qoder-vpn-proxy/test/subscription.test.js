@@ -2,8 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const S = require('../server/subscription');
+const { maskHosts } = require('../server/redact');
 
 const fx = (n) => fs.readFileSync(path.join(__dirname, 'fixtures', n), 'utf8');
 
@@ -52,4 +54,38 @@ test('html 判定为格式异常并抛 ApiError', () => {
     () => S.decodeBody(fx('sub-html.txt'), 'html'),
     (e) => e.kind === 'subscription_format_unexpected'
   );
+});
+
+test('URL 解析失败时不回显原链接', async () => {
+  await assert.rejects(
+    S.fetchSubscription('订阅链接待补'),
+    (e) => e.kind === 'subscription_url_invalid'
+      && !e.message.includes('订阅链接待补')
+      && e.message.includes('<masked-url>')
+  );
+});
+
+test('订阅站非 200 时，提示里既没有 token 也没有主机名与路径段', async () => {
+  const server = http.createServer((req, res) => { res.writeHead(500); res.end('boom'); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/AbCdEfGhIjKlMnOpQrSt?token=0123456789abcdef0123456789abcdef`;
+  let err = null;
+  try { await S.fetchSubscription(url); } catch (e) { err = e; }
+  server.close();
+  assert.ok(err, '非 200 必须拒');
+  assert.equal(err.kind, 'subscription_format_unexpected');
+  const all = `${err.message} ${err.hint}`;
+  assert.doesNotMatch(all, /AbCdEfGhIjKlMnOpQrSt|0123456789abcdef/, 'token 与路径段都不出口');
+  assert.doesNotMatch(all, /127\.0\.0\.1/, '主机名也不出口');
+  assert.match(all, /<masked-host>/);
+});
+
+test('网络错误文本里的订阅主机名被顶掉（DNS 失败是主要泄露面）', () => {
+  const url = 'https://panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER';
+  const raw = 'fetch failed: getaddrinfo ENOTFOUND panel.example.invalid:443';
+  assert.equal(
+    maskHosts(raw, url),
+    'fetch failed: getaddrinfo ENOTFOUND <masked-host>:443'
+  );
+  assert.doesNotMatch(maskHosts(raw, url), /panel\.example\.invalid|SUBPATH|TOKEN_PLACEHOLDER/);
 });

@@ -1,6 +1,6 @@
 'use strict';
 const { ok, fail, ApiError, toEnvelope } = require('./envelope');
-const { redactText, redactUrl } = require('./redact');
+const { redactText } = require('./redact');
 const { buildProxyEnv, inlinePrefix, GIT_PROXY_HOSTS } = require('./env');
 const { probeTcp } = require('./discovery');
 const { runDiagnose, DEFAULT_TARGETS } = require('./diagnose');
@@ -81,7 +81,10 @@ function subscriptionSummary(repoEntry) {
   const u = repoEntry.userInfo || {};
   const gb = (n) => (n == null ? null : Math.round((n / 1024 / 1024 / 1024) * 100) / 100);
   return {
-    uid: repoEntry.uid, name: repoEntry.name, url: redactUrl(repoEntry.url || ''),
+    uid: repoEntry.uid, name: repoEntry.name,
+    // repo.toEntry 已经出过 mask，这里再过一次只会把 <masked-host> 变成 <masked-host>；
+    // 直接透传，避免"二次脱敏"给人一种还能拿到原链接的错觉。
+    url: repoEntry.url || null, urlFingerprint: repoEntry.urlFingerprint || null,
     nodes: repoEntry.nodes, usedGb: gb(u.download), totalGb: gb(u.total),
     expire: u.expire ? new Date(u.expire * 1000).toISOString().slice(0, 10) : null,
     updated: repoEntry.updated,
@@ -305,7 +308,7 @@ function buildTools(deps) {
     },
     {
       name: 'proxy_subscriptions',
-      description: '列出全部订阅：名称、脱敏后的 url（token 恒为 <redacted>）、是否当前激活、节点数、已用/总量流量与到期日、最后更新时间、来源（cvr=Clash Verge 原有 / plugin=插件添加）、备注。数据以 profiles.yaml 为准，每次现读不缓存。',
+      description: '列出全部订阅：名称、掩码后的 url（主机名、路径段与 token 一律不输出，只剩 `https://<masked-host>/<masked-path>?<masked-query>` 的结构）、urlFingerprint（sha256(host+path) 前 10 位，用来回答"两次看到的是不是同一条链接"，换 token 不变）、是否当前激活、节点数、已用/总量流量与到期日、最后更新时间、来源（cvr=Clash Verge 原有 / plugin=插件添加）、备注。数据以 profiles.yaml 为准，每次现读不缓存。',
       inputSchema: obj(),
       handler: async () => ok(await (await requireRepo(deps)).list()),
     },

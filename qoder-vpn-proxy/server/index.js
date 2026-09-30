@@ -10,6 +10,7 @@ const { CvrConfig } = require('./cvr-config');
 const { SubscriptionRepo } = require('./subscriptions');
 const { ToolConfig } = require('./toolconfig');
 const { ApiError } = require('./envelope');
+const { redactText } = require('./redact');
 const store = require('./store');
 
 const LOG_FILE = 'mcp.log';
@@ -20,12 +21,15 @@ function makeLogger(dirs) {
   let stream = null;
   try { stream = fs.createWriteStream(path.join(dirs.logs, LOG_FILE), { flags: 'a' }); } catch { stream = null; }
   const log = (line) => {
-    const text = `[${new Date().toISOString()}] ${String(line)}`.slice(0, 4000);
-    if (stream) stream.write(text + '\n');
-    try { process.stderr.write(text + '\n'); } catch { /* stderr 被关时忽略 */ }
+    // 日志是唯一会留在磁盘上的输出面：异常栈里常常带着调用方传进来的订阅链接，
+    // 所以红线设在写盘这一步，而不是指望每个调用点自己记得脱敏。
+    const text = redactText(`[${new Date().toISOString()}] ${String(line)}`);
+    const safe = text.length > 4000 ? text.slice(0, 4000) : text;
+    if (stream) stream.write(safe + '\n');
+    try { process.stderr.write(safe + '\n'); } catch { /* stderr 被关时忽略 */ }
   };
   // 日志流是 ref 的：不关掉它，stdin 结束后事件循环永不空转，进程挂住不退
-  log.close = () => { if (stream) { stream.end(); stream = null; } };
+  log.close = (cb) => { if (stream) { stream.end(cb); stream = null; } else if (cb) cb(); };
   return log;
 }
 

@@ -2,7 +2,7 @@
 const https = require('node:https');
 const http = require('node:http');
 const { ApiError } = require('./envelope');
-const { redactUrl, redactText } = require('./redact');
+const { redactText, maskSubscriptionUrl, maskHosts } = require('./redact');
 
 const CLASH_UA = 'clash-verge/v2.3.0';
 
@@ -69,7 +69,7 @@ function countNodes(parsed) { return parsed.nodes; }
 function fetchSubscription(url, { timeoutMs = 25000 } = {}) {
   return new Promise((resolve, reject) => {
     let parsedUrl;
-    try { parsedUrl = new URL(url); } catch { return reject(new ApiError('subscription_url_invalid', `URL 无法解析: ${redactUrl(String(url))}`, '需要完整的 http(s) 订阅链接')); }
+    try { parsedUrl = new URL(url); } catch { return reject(new ApiError('subscription_url_invalid', `URL 无法解析: ${maskSubscriptionUrl(String(url))}`, '需要完整的 http(s) 订阅链接')); }
     if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
       return reject(new ApiError('subscription_url_invalid', '只支持 http(s) 订阅链接', ''));
     }
@@ -88,7 +88,7 @@ function fetchSubscription(url, { timeoutMs = 25000 } = {}) {
         }
         if (res.statusCode !== 200) {
           return reject(new ApiError('subscription_format_unexpected',
-            `HTTP ${res.statusCode}`, `订阅站返回非 200；${redactUrl(url)}`));
+            `HTTP ${res.statusCode}`, `订阅站返回非 200；${maskSubscriptionUrl(url)}`));
         }
         const format = sniffFormat(body);
         const decoded = decodeBody(body, format);
@@ -102,8 +102,10 @@ function fetchSubscription(url, { timeoutMs = 25000 } = {}) {
         });
       });
     });
-    req.on('timeout', () => req.destroy(new ApiError('timeout', '抓取订阅超时', '订阅站可能被墙，需先开代理再更新')));
-    req.on('error', (e) => reject(new ApiError('timeout', `抓取订阅失败: ${e.code || e.message}`, '确认该域名能否直连')));
+    req.on('timeout', () => req.destroy(new ApiError('timeout', `抓取订阅超时: ${maskSubscriptionUrl(url)}`, '订阅站可能被墙，需先开代理再更新')));
+    // Node 的网络错误消息会直接带出裸主机名（getaddrinfo ENOTFOUND xxx），不是 URL 形状，
+    // 上面的形状正则管不到，只能拿这条订阅自己的 host/路径段逐词顶掉。
+    req.on('error', (e) => reject(new ApiError('timeout', `抓取订阅失败: ${maskHosts(String(e.code || e.message), url)}`, '确认该域名能否直连，或用 proxy_diagnose 看要不要先开代理')));
     req.end();
   });
 }

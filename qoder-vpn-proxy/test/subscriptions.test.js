@@ -46,7 +46,7 @@ function sandbox(t) {
   return { dir, configDir, dirs, repo, reloads };
 }
 
-test('首次 list 从 profiles.yaml 导入 remote 项，url 已脱敏', async () => {
+test('首次 list 从 profiles.yaml 导入 remote 项，url 连主机名与路径段一起抹掉', async () => {
   const { dir, repo } = sandbox('list');
   const items = await repo.list();
   assert.equal(items.length, 1);
@@ -54,10 +54,53 @@ test('首次 list 从 profiles.yaml 导入 remote 项，url 已脱敏', async ()
   assert.equal(items[0].name, '测试订阅');
   assert.equal(items[0].active, true);
   assert.equal(items[0].source, 'cvr');
-  assert.match(items[0].url, /token=<redacted>$/);
-  assert.ok(!items[0].urlPathOnly.includes('TOKEN_PLACEHOLDER'), 'urlPathOnly 也不能带 query');
+  assert.equal(items[0].url, 'https://<masked-host>/<masked-path>?<masked-query>');
+  assert.equal(items[0].urlPathOnly, undefined, 'urlPathOnly 会原样带出主机名，必须撤掉');
+  assert.match(items[0].urlFingerprint, /^[0-9a-f]{10}$/, '要能回答"两次看到的是不是同一家"');
   assert.equal(items[0].nodes, null, '没抓过就报 null，不能编节点数');
-  assert.ok(!JSON.stringify(items).includes('TOKEN_PLACEHOLDER'), '任何字段都不出现原 token');
+  const json = JSON.stringify(items);
+  assert.ok(!json.includes('TOKEN_PLACEHOLDER'), '任何字段都不出现原 token');
+  assert.ok(!json.includes('panel.example.invalid'), '任何字段都不出现订阅主机名');
+  assert.ok(!json.includes('SUBPATH'), '任何字段都不出现订阅路径段');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('uid 打错时的候选清单只报 uid，不拿订阅地址顶名', async () => {
+  const { dir, configDir, repo } = sandbox('hint');
+  // 造一个没有名字的 remote 项：mustFind 的兜底分支正是拿 url 顶替 name，最容易漏脱敏
+  fs.writeFileSync(path.join(configDir, 'profiles.yaml'),
+    P.appendItem(PROFILES, { uid: 'NONAME000001', type: 'remote', name: null, file: 'NONAME000001.yaml', url: FIXTURE_URL, updated: 1790000000 }));
+  let err = null;
+  try { repo.mustFind('NOPE'); } catch (e) { err = e; }
+  assert.ok(err, '未知 uid 必须抛');
+  assert.equal(err.kind, 'subscription_not_found');
+  const all = `${err.message} ${err.hint}`;
+  assert.doesNotMatch(all, /panel\.example\.invalid|SUBPATH|TOKEN_PLACEHOLDER/, '错误提示也是输出面');
+  assert.match(all, /NONAME000001/, '但还得真能让用户认出有哪些订阅');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('add 的返回值抹掉主机名与路径段，注册表里仍是原链接', async () => {
+  const NEW_URL = 'https://panel2.example.invalid/AbCdEfGhIjKlMnOpQrSt?token=0123456789abcdef0123456789abcdef';
+  const { dir, configDir, repo } = sandbox('add-mask');
+  const e = await repo.add({ url: NEW_URL, name: '第二家' });
+  assert.equal(e.url, 'https://<masked-host>/<masked-path>?<masked-query>');
+  assert.match(e.urlFingerprint, /^[0-9a-f]{10}$/);
+  const json = JSON.stringify(e);
+  assert.doesNotMatch(json, /panel2\.example\.invalid|AbCdEfGhIjKlMnOpQrSt|0123456789abcdef/);
+  const raw = fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8');
+  assert.ok(raw.includes(NEW_URL), 'CVR 要用原链接自更新，注册表不能被抹');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('同一订阅的指纹在 list/add/update 三条路径上一致', async () => {
+  const { dir, configDir, repo } = sandbox('fp');
+  const fromList = (await repo.list())[0].urlFingerprint;
+  const item = P.listItems(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8'))
+    .find((i) => i.uid === 'Rq14DVii2DNo');
+  assert.equal(fromList, require('../server/redact').urlFingerprint(item.url), '指纹要能对得上原链接');
+  const fromUpdate = await repo.update('Rq14DVii2DNo');
+  assert.equal(fromUpdate.urlFingerprint, fromList);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -127,7 +170,8 @@ test('edit 改 url（token 轮换）后旧 profile 文件不被破坏', async ()
   fs.writeFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), '# 原订阅内容\nproxies: []\n');
   const before = fs.readFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), 'utf8');
   const e = await repo.edit('Rq14DVii2DNo', { url: 'https://panel.example.invalid/NEWPATH?token=NEW' });
-  assert.match(e.url, /token=<redacted>$/);
+  assert.equal(e.url, 'https://<masked-host>/<masked-path>?<masked-query>');
+  assert.doesNotMatch(JSON.stringify(e), /panel\.example\.invalid|NEWPATH/, '换链接的返回值也不能把新地址带出口');
   assert.ok(fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8').includes('token=NEW'));
   assert.equal(fs.readFileSync(path.join(configDir, 'profiles', 'Rq14DVii2DNo.yaml'), 'utf8'), before, 'edit url 不动内容文件；只有 update 才重写');
   fs.rmSync(dir, { recursive: true, force: true });
