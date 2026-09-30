@@ -63,9 +63,38 @@ real	0m1.671s
 
 ## 验收 3：浏览器/游戏等其他应用行为不变
 
-**证据**：全程 `ProxyEnable` 读回 `0x0`（见验收 1 末行，以及收尾现场核对）；`enableTunMode:false`、`core.tunEnabled:false`；插件代码里唯一的写路径是 `%APPDATA%` 下的 `verge.yaml`/`profiles.yaml` 文件、`~/.npmrc` 与 git 全局配置，外部命令只有 CVR 启动、`taskkill`、`curl` —— **没有任何注册表写操作**。
+**证据**：全程 `ProxyEnable` 读回 `0x0`（见验收 1 末行，以及收尾现场核对）；`enableTunMode:false`、`core.tunEnabled:false`；插件代码里唯一的写路径是 `%APPDATA%` 下的 `verge.yaml`/`profiles.yaml` 文件、`~/.npmrc` 与 git 全局配置，外部命令只有 CVR 启动、`taskkill`、`curl`，另有**只读**的 `tasklist`（判进程是否退出）与 `reg query … /v ProxyEnable`（缺陷 8 修复加的复查）—— **没有任何注册表写操作**，测试里还专门断言了 `reg` 只能以 `query` 形态出现。
 
-**结论**：达成。WinINET 层 `ProxyEnable=0` 时浏览器忽略 `ProxyServer`，系统代理未开启即整机未受影响。
+**结论**：达成，但**中途真实破防过一次**（缺陷 8，见下面"破防记录"）。"插件不写注册表"不等于"系统代理不会被打开了" —— `proxy_core_stop` 的还原时序会让 CVR 自己去写。
+
+**破防记录（缺陷 8，15:16 收尾核查时发现）**：验收 9 那轮 `proxy_core_stop` 之后现场是
+
+```
+tasklist → clash-verge.exe / verge-mihomo.exe 都已退出
+netstat  → 127.0.0.1:7897 无人监听
+reg query ProxyEnable → 0x1        ← 浏览器此刻全线"连接被拒绝"
+```
+
+原因：`stop()` 在 `taskkill` 之后**立刻** `copyFileSync` 还原 `verge.yaml`，而文件里 `enable_system_proxy` 本来就是 `true`；CVR 进程还在拆除中读到这份"已还原"的配置，就按它把系统代理重新打开了。核心随后消失，开关留着 —— 插件一行注册表代码都没写，却造成了整机影响。
+
+处置（当场，按用户"注册表不要清掉"的边界只做最小修复）：
+
+```
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f
+读回 → ProxyEnable 0x0        （ProxyServer / ProxyOverride 一字未动，保持用户决定的"不清"）
+```
+
+修复（TDD，红 → 绿）：`stop()` 改成 `taskkill` → `waitForExit()` 轮询 `tasklist /FI "IMAGENAME eq <image>" /NH`（按镜像名子串判活，绕开 tasklist 中文提示的 GBK 乱码）→ 进程确实没了才 `restore(['verge.yaml'])`；等不到也照样还原（不能把压制永久留着），但把 `stillRunning` 与一句警告报出来；还原后再只读复查 `ProxyEnable`，若仍为 1 就回 `systemProxyEnabled:true` + 带 `reg add` 全命令的警告，**由用户执行，插件不代写**。四条新测试：还原必须晚于最后一次轮询（且只还原一次）、杀不掉时有上限且仍还原并上报、泄漏必须被报出且事件里不许出现 `reg add`/`reg delete`、`waitForExit` 吃 GBK Buffer。真机复验：完整 `start → stop` 两轮，`ProxyEnable` 全程 `0x0`：
+
+```
+调用前 ProxyEnable = 0x0
+start -> pipe {"mixed":7897,"socks":7898,"http":7899} systemProxySuppressed = true
+运行中 ProxyEnable = 0x0
+stop -> {"killed":["clash-verge.exe","verge-mihomo.exe"],"restored":true,"stillRunning":[],"systemProxyEnabled":false,"warnings":[]}
+停止后 ProxyEnable = 0x0
+```
+
+（红 → 绿也单独证过：把 `waitForExit` 那行换成旧行为，两条新测试立刻 fail，恢复后 22/22。）
 
 **遗留问题**：CVR 自己在运行期间写入了两个注册表值（基线里不存在）：
 
@@ -380,9 +409,33 @@ $ 再跑一次 hook → additionalContext = ""                        ← 停核
 
 顺带查出缺陷 7：注入文案里把工具写成 `mcp__vpn-proxy__proxy_diagnose`，而 Qoder 实际暴露的全名是 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose`（见本节第 1 条）—— 模型照文案调用必然找不到工具。已改文案并同步。
 
-**验收 9 现在的状态**：负向分支（CVR 未运行 ⇒ 空串）与正向分支（CVR 运行 ⇒ 注入端口与前缀）都已在**修好的 launcher 上**取得证据，且 hook 被 Qoder 调用这一点由日志直接证明。**唯一还没有的真机环节**：带非空 `additionalContext` 的那次注入出现在**正在运行的 Qoder 会话开头**（需要在 CVR 运行的同时再触发一次 SessionStart）。superpowers 同形状的 hook 本会话确实落地了，说明通路没问题，但这一条不该替本插件代劳 —— 留作可选的最后一步。
+**验收 9 现在的状态：两条分支都在真实 Qoder 会话里观测到了，本项闭环。**
 
-若还想复核，按 `docs/superpowers/probes/02-hooks.md` §4 的顺序查：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 是否 5 秒内退出。现在再加一条：**launcher 必须是纯 ASCII**。
+最后这一步没有再麻烦用户重启，改用 `mcp__builtin__create_chat_session` 拉起一个**全新的 Qoder 会话**（matcher 里 `startup` 命中，SessionStart 钩子照常跑），让那个会话逐字复述它收到的开场附加上下文：
+
+```
+15:14:45  proxy_core_start → scope=session, systemProxySuppressed:true, ports 7897/7898/7899
+          netstat → 127.0.0.1:7897 LISTENING (pid 38656)
+15:15:00  新会话 f7fe8738（CVR 在跑）逐字引用到的注入原文：
+          "本机 Clash Verge 代理端口 127.0.0.1:7897 当前可连通（插件 qoder-vpn-proxy 检测）。
+           直连失败时，联网命令请加前缀：HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=…
+           NO_PROXY=\"127.0.0.1,localhost,::1,*.cn,…\" npm/git 想长期走代理用
+           mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_toolconfig(action=apply)；…
+           注意：系统代理未开启，本提示只影响命令行工具；Qoder 自身请求建议保持直连。"
+          $ reg query "HKCU\...\Internet Settings" → ProxyEnable 0x0   ← 前提成立：拉起 CVR 没打开系统代理
+15:14:xx  proxy_core_stop → killed [clash-verge.exe, verge-mihomo.exe]，restoredList 只有 verge.yaml
+          （这一步当时看着完美；十几分钟后收尾核查才发现它把 ProxyEnable 留成了 0x1 —— 缺陷 8，见验收 3"破防记录"）
+15:16:29  新会话 aec483cd（端口已关）明确回答"没有"，并逐项排除了三类干扰来源：
+          它上下文里出现的 17 个 vpn-proxy 工具名与 qoder-vpn-proxy:vpn-proxy 技能属于**静态注册表**，
+          MEMORY.md 里的 Clash Verge 条目属于**跨会话记忆**，都不是本次 SessionStart 注入 ——
+          排除后没有任何块承载"7897 / 代理端口"字样。
+```
+
+正向（核心在跑 ⇒ 注入落地，且工具名是能被调用的全名）与负向（核心停了 ⇒ 不注入）各拿到一次真会话证据，且这轮跑的是修好的 ASCII launcher —— 缺陷 6 的正主 `node server/session-start.js` 这次确实执行到了。
+
+顺带收下那个会话提的一条建议，但它**不改**：它建议"hook 未注入时额外说明'工具已注册但不代表代理可用'"。这与验收 9 的前提冲突（CVR 未运行时必须完全静默），而"工具注册 ≠ 代理可用"已经写在 SKILL.md 的边界一节里，不需要靠开场提示重复一遍。
+
+复核路径（下次怀疑 hook 时照这个顺序）：`~/.qoder/logs/latest/qodercli.log` 的 `hook.started` / `hook.finished` → launcher 是否纯 ASCII → `hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 是否 5 秒内退出。原始三步来自 `docs/superpowers/probes/02-hooks.md` §4，前两步是本轮新加的。
 
 
 ---
@@ -402,7 +455,7 @@ $ 再跑一次 hook → additionalContext = ""                        ← 停核
 
 ---
 
-## 本轮真机跑出来的 7 个缺陷（1–4 同源：测试替身没像真机；5–7 同源：宿主环境/命名没像开发 shell）
+## 本轮真机跑出来的 8 个缺陷（1–4 同源：测试替身没像真机；5–7 同源：宿主环境/命名没像开发 shell；8：进程生命周期时序）
 
 | 缺陷 | 触发方式 | 修复 |
 |---|---|---|
@@ -414,38 +467,47 @@ $ 再跑一次 hook → additionalContext = ""                        ← 停核
 | **（第 6 个）`hooks/run-hook.cmd` 里的中文注释让 cmd.exe 解析错位 → hook 每次 exit 255，`node` 从未执行** | Qoder 日志 `hook.finished success=false exit_code=255` + stderr"文件名、目录名或卷标语法不正确"；同形状的 superpowers launcher 同一次启动里 exit 0。把 Qoder 的调用形态抄成脚本即可稳定复现 | launcher 全文改回纯 ASCII（cmd.exe 按 OEM 码页 GBK 读批处理，UTF-8 多字节注释会把行首偏移切错）。新增测试断言"launcher 零非 ASCII 字节"，红 → 修 → 全量 161/0。**教训**：双语种 polyglot launcher 的批处理段只能放 ASCII；解释性中文放到 bash 段或 README 里 |
 | **（第 7 个）注入文案里的工具名是猜的**：写成 `mcp__vpn-proxy__proxy_diagnose`，Qoder 实际暴露 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose` | 会话内列出工具时看到真实前缀（`mcp_list` 返回 17 个全名），与 hook 文案对不上 —— 模型照文案调用必然"工具不存在" | `session-start.js` 文案改用实测全名，先把测试断言换成全名跑红再修。**教训**：给模型看的工具名必须从运行时列出来的清单里抄，不能按插件名拼 |
 
-前 4 个都先写红测试、改代码、再跑全量（147 → 148 → 150 → 152 → 153 → **154**，`# fail 0`），并且**同时把 fake 改成和真机一样**——否则同类 bug 下次还会从 fake 的缝里钻出来。第 5 个在重启后补测时发现，红测试 + 修复后全量 **160 / 0 fail**（中间加 Task 18 的 prune 5 条：154 → 159 → 160）。第 6、7 个在第二次重启时发现，同样红 → 修 → **161 / 0 fail**。
+| **（第 8 个）`stop()` 在 CVR 还在拆除时就还原 `verge.yaml`，CVR 于是把系统代理重新打开** —— 核心已停、`ProxyEnable=0x1`、7897 无人监听，浏览器全线"连接被拒绝" | 15:16 收尾例行核查 `reg query ProxyEnable` 时发现；插件全仓没有一行注册表写代码，却造成了整机影响（验收 3 破防） | `stop()` 拆成 `taskkill` → `waitForExit()`（轮询 `tasklist /FI "IMAGENAME eq …"`，按镜像名子串判活以躲开 GBK 中文提示）→ 才 `restore(['verge.yaml'])`；等不到也还原，但回 `stillRunning` + 警告；还原后只读复查 `ProxyEnable`，为 1 时把 `reg add … /d 0 /f` 原文交给用户执行（插件不代写）。新增 4 条测试，红 → 修 → 全量 **165 / 0 fail**，真机 `start→stop` 两轮 `ProxyEnable` 恒为 `0x0`。**教训**：验证"不影响其他应用"不能只看代码里有没有写注册表，要看**外部程序会不会替我们写**；进程生命周期是有延迟的，杀进程和改它的配置之间必须有一次"真的退出了吗"的确认 |
+
+前 4 个都先写红测试、改代码、再跑全量（147 → 148 → 150 → 152 → 153 → **154**，`# fail 0`），并且**同时把 fake 改成和真机一样**——否则同类 bug 下次还会从 fake 的缝里钻出来。第 5 个在重启后补测时发现，红测试 + 修复后全量 **160 / 0 fail**（中间加 Task 18 的 prune 5 条：154 → 159 → 160）。第 6、7 个在第二次重启时发现，同样红 → 修 → **161 / 0 fail**。第 8 个在验收全部闭环后的收尾核查里才冒出来 —— 它不是调用失败，而是"成功返回却把机器改坏了"，只有对照设计前提去读注册表才看得见，所以以后每轮 `proxy_core_stop` 之后都要再读一次 `ProxyEnable`。
 
 ---
 
 ## 收尾现场核对
 
 ```
-$ tasklist | grep -i -E 'clash-verge|verge-mihomo'
-(CVR 进程已退出)
-$ netstat -ano -p tcp | grep -E ':(7897|9097)\b'
-(7897/9097 未监听)
-$ node qvp-reg.js
-ProxyEnable = 0x0
-ProxyServer = 127.0.0.1:7897        ← CVR 自己写的，基线里没有；ProxyEnable=0 故惰性
-ProxyOverride = localhost;127.*;…   ← 同上
-$ 配置哈希
-verge.yaml 1685d55c4dd5d3ff == 基线
+（下面是缺陷 8 修复复验后的最新一次核对，15:3x；比首次收尾多跑了三轮 start→stop）
+$ tasklist /FI "IMAGENAME eq clash-verge.exe" → 没有运行的任务
+$ tasklist /FI "IMAGENAME eq verge-mihomo.exe" → 没有运行的任务
+$ netstat -ano -p tcp | grep ':7897' | grep LISTENING → 0 条
+  （另有若干 FIN_WAIT_2 残留，是被 kill 掉的 pid 38656 的在途连接，会自己消失）
+$ reg query "HKCU\...\Internet Settings"
+ProxyEnable = 0x0                     ← 缺陷 8 修好后两轮启停都没再被打开
+ProxyServer = 127.0.0.1:7897          ← CVR 自己写的，基线里没有；用户已定"不清"
+ProxyOverride = localhost;127.*;…     ← 同上
+$ 配置哈希（sha256 前 16 位）
+verge.yaml 1685d55c4dd5d3ff == 基线   ← stop 的还原是对的，压制没留痕
 config.yaml 995b9d6c703229d4 == 基线
-profiles.yaml f2dfaeb510fe77ca（用户主动的订阅切换；原始字节在 profiles.yaml.20260930-123930-488-001.bak）
-clash-verge.yaml 8e3e41c9ea3116fe（CVR 13:06:49 自己重写；插件从不写这个文件）
+profiles.yaml 155b55c511e267b3（首次收尾是 f2dfaeb510fe77ca；CVR 启停时自己重写元数据，current 仍是用户选的 TESTUID1ef15）
+clash-verge.yaml 01441c4bdf3fdf32（CVR 自己的运行时文件；插件从不写它）
 $ 订阅清单
 1 条：TESTUID1ef15 /「示例机场(新)」/ 15 节点 / remark="2026-09-30 换地址"
 旧条目 TESTUIDd7225 已删除，内容文件在 ~/.qoder/vpn-proxy/.trash/，可放回撤销
+$ prune（只跑了 dryRun，真删等用户点头）
+~/.qoder/vpn-proxy/backups 现有 27 个文件；keepPerName=5 / olderThanDays=14 的默认策略下
+wouldDelete 16、kept 11、failed 0，删除原因全是 "count"（同一名备份超出 5 份的最新保留数）
 $ 安装副本与开发副本
-cmp server/*.js test/*.js README.md skills/vpn-proxy/SKILL.md .qoder-plugin/plugin.json .mcp.json hooks/hooks.json → 无差异
+diff -rq server hooks skills + cmp .qoder-plugin/plugin.json → 无差异；
+安装副本自己跑 node --test --test-force-exit → 165 tests / 165 pass / 0 fail
 ```
 
 ## 未闭环清单
 
-1. ~~验收 4 的 Qoder 集成层~~ —— **已闭环**：第二次重启后会话内实测 `installed:true`、schema 带 `prune`，缺陷 5 与 prune 都进了正在服务的进程。**验收 9 已按修好的 launcher 取得正负两支证据**（见该节"第二次重启后的实测"）：负向 = CVR 停 ⇒ 空串；正向 = `proxy_core_start` 拉起 ⇒ 注入 7897 那段且 `ProxyEnable` 仍 `0x0`。剩下的唯一环节是"带非空文本的注入出现在正在运行的 Qoder 会话开头"，需要在 CVR 运行的同时再触发一次 SessionStart（重启或 `/clear`）—— 可选，不是阻塞。
+1. ~~验收 4 的 Qoder 集成层~~ —— **已闭环**：第二次重启后会话内实测 `installed:true`、schema 带 `prune`，缺陷 5 与 prune 都进了正在服务的进程。~~验收 9~~ —— **也已闭环**：查明 hook 一直被调用却每次崩溃（缺陷 6），修成纯 ASCII launcher 后，正向与负向两条分支都用 `create_chat_session` 拉起的**全新真实会话**各观测到一次（15:15 注入逐字落地 / 15:16 完全不注入），见该节末尾。
 2. `proxy_test` 默认 5000ms timeout 在冷核心上误报 —— 已记录，未改。
 3. ~~`backups/profiles.yaml.*` 含原始 token，无保留期策略~~ —— **已由用户决定并实现（①，计划 Task 18）**：`proxy_restore_config prune=true`。残留局限见上面"后记"。
-4. ~~CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值~~ —— **用户已定（②追问后）："注册表不要清掉"**。两个值保持现状、插件与用户都不动它们；这与"插件从不写注册表"的前提一致，也意味着本次收尾未产生任何对用户机器的不可逆改动。当前状态：`ProxyEnable=0x0`，两值惰性（系统代理仍关闭，浏览器/游戏不受影响）。
+4. ~~CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值~~ —— **用户已定（②追问后）："注册表不要清掉"**。两个值保持现状、插件与用户都不动它们；当前 `ProxyServer=127.0.0.1:7897`、`ProxyOverride=localhost;127.*;…` 仍在原位，`ProxyEnable=0` 使它们惰性（系统代理仍关闭，浏览器/游戏不受影响）。**但要说清一件事**：15:16 那次缺陷 8 让 `ProxyEnable` 变成过 `0x1`，我按上面"破防记录"里的命令把它写回 `0x0` —— 这是**唯一一次**注册表写入，且写回的是本机基线值（把 CVR 造成的偏离恢复原样），不是清理用户数据。除此之外本轮收尾未对机器产生任何不可逆改动。
 5. ~~"Qoder 模型请求要不要走代理"仍未回答~~ —— **用户已定（③）：不走**。已写进 SKILL.md 边界与 spec §8。
 6. **推送前的新增阻塞（本次核查发现，比上面几条都严重）**：spec §2 曾把订阅 URL 的完整路径段写进事实表，计划里 `redactUrl('…?token=<完整 token>')` 那行测试样例曾带**完整 32 位 token**。逐提交扫描全部 31 个提交把范围钉准：**6 个提交的树里仍带完整 token** —— master 的 `ecd10fd`/`d75f7e8`/`37b1d6c`/`0f8410a` 加分支早期的 `c9fdb9e`/`7673dd0`；分支从 `9957740`（Task 5）起树里已无真 token，**tip 干净**（HEAD 全仓只剩合成 fixture `token=0123…`，计划与本文档只剩 8 字符 grep 前缀）。但 PR 的 base 必须是 master，分支自身历史也带着那 6 个 blob，所以"只推 feature 分支"同样会泄露。本仓库至今 `git remote -v` 为空、`gh` 不在 PATH，所以尚未有任何内容外泄 —— 属可避免，不是已发生。可选处置：① 机场面板先轮换 token（最彻底；轮换后计划与本文档里那四个 8 字符 grep 前缀要一起更新）；② 重写那 6 个提交里对应的行（目前没有 remote，重写成本极低，但属破坏性 git 操作，需显式同意）；③ **推一份不含历史的干净快照**：从当前 tip 建 orphan 分支作为 base + 工作分支，公开的任何 blob 里都不含秘密，代价是丢掉逐任务的提交粒度；④ 暂不推。未选定前**不执行任何 push**；选定后还需要用户给出 remote URL 与仓库可见性（公开/私有），且 `gh` 缺失意味着 PR 只能用 API token 或网页手工创建。
+7. **缺陷 8 的修复还没进"正在服务的那个 MCP 进程"** —— 安装副本已同步且自测 165/165，但本会话用的仍是重启前加载的旧代码，所以**会话里调 `proxy_core_stop` 依旧会踩这个坑**。上面的真机复验是用已安装文件另起子进程做的（`node Temp/qvp-defect8-verify.js`），不是从会话的 MCP 通道跑的。下次重启 Qoder 后应验：`proxy_core_stop` 返回体里有 `stillRunning` / `systemProxyEnabled` / `warnings` 三个字段，且停止后 `ProxyEnable` 仍为 `0x0`。在此之前不要宣称缺陷 8 在 Qoder 内闭环。
+8. **`prune` 只跑了 dryRun**：默认策略下会删 16 个（同一名超过 5 份）。备份是本轮唯一的撤销手段，删除不可逆，等用户明确点头才执行。

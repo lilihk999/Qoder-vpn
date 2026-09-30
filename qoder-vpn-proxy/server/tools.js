@@ -197,7 +197,7 @@ function buildTools(deps) {
     },
     {
       name: 'proxy_core_stop',
-      description: '结束 clash-verge.exe 与 verge-mihomo.exe 进程。restore=true（默认）时把 verge.yaml 与 profiles.yaml 还原到最近一次插件备份，让配置回到插件动手之前的状态。',
+      description: '结束 clash-verge.exe 与 verge-mihomo.exe 进程，等进程确实退出后再把 verge.yaml 还原到最近一次插件备份（profiles.yaml 属用户持久数据，不由 stop 还原，要用 proxy_restore_config）。返回 stillRunning 与 systemProxyEnabled 供确认系统代理没被重新打开。',
       inputSchema: obj({ restore: bool('是否还原配置备份，默认 true') }),
       handler: async (a = {}) => {
         const cvr = await deps.getCvr();

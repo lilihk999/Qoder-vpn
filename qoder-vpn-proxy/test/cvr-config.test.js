@@ -287,3 +287,102 @@ test('stop：taskkill 两个镜像，restore=true 时还原备份', async () => 
   assert.equal(r2.restored, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// 缺陷 8：真机上 proxy_core_stop 之后 ProxyEnable 变成 0x1 而 7897 无人监听，浏览器全部连接被拒。
+// 原因是 taskkill 之后立刻 copyFileSync 还原 verge.yaml（里面 enable_system_proxy: true），
+// 而此时 CVR 还在拆除中 —— 它读到新配置就把系统代理又打开了。
+test('stop 必须先确认 CVR 进程真的退出，再还原 verge.yaml', async () => {
+  const dir = mkSandbox('stop-exit-order');
+  const cfg = path.join(dir, 'config');
+  const events = [];
+  let polls = 0;
+  const execFile = (cmd, args) => {
+    if (cmd === 'taskkill') { events.push(`kill:${args[1]}`); return Promise.resolve({ stdout: '' }); }
+    if (cmd === 'tasklist') {
+      const image = /IMAGENAME eq (\S+)/.exec(args.join(' '))[1];
+      const alive = (polls += 1) <= 3; // 第一轮三次轮询进程都还在，第二轮才消失
+      events.push(`poll:${image}:${alive ? 'alive' : 'gone'}`);
+      return Promise.resolve({ stdout: alive
+        ? `${image}                   1234 Console                    1     10,240 K\n`
+        : 'INFO: No Tasks are running which match the specified criteria.\n' });
+    }
+    if (cmd === 'reg') return Promise.resolve({ stdout: '    ProxyEnable    REG_DWORD    0x0\n' });
+    throw new Error(`不该调用 ${cmd} ${args.join(' ')}`);
+  };
+  const fsSpy = Object.create(fs);
+  const vergeFile = path.join(cfg, 'verge.yaml');
+  // backup() 也走 copyFileSync（方向是 config -> backups），只统计"写回配置"这一侧
+  fsSpy.copyFileSync = (a, b) => { if (b === vergeFile) events.push('copy'); return fs.copyFileSync(a, b); };
+  const cvr = new C.CvrConfig({
+    configDir: cfg, backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fsSpy, execFile,
+  });
+  await cvr.backup(['verge.yaml']);
+  await cvr.suppressSystemProxy();
+  const r = await cvr.stop({ restore: true, exitTimeoutMs: 1000, pollMs: 10 });
+  const copyAt = events.indexOf('copy');
+  const lastPoll = events.reduce((acc, e, i) => (e.startsWith('poll:') ? i : acc), -1);
+  assert.ok(copyAt > -1, '还原确实发生了');
+  assert.equal(events.filter((e) => e === 'copy').length, 1, '还原只发生在进程退出之后这一次');
+  assert.ok(lastPoll > -1, 'stop 必须查过进程是否还在');
+  assert.ok(lastPoll < copyAt, `顺序应为"轮询到进程消失"->"还原"，实际事件：${events.join(' | ')}`);
+  assert.deepEqual(r.stillRunning, [], '最终三个镜像都退出了');
+  assert.match(fs.readFileSync(path.join(cfg, 'verge.yaml'), 'utf8'), /^enable_system_proxy: true$/m);
+  assert.equal(r.systemProxyEnabled, false, 'ProxyEnable=0x0 应读成 false');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('进程杀不掉时 stop 依然要还原配置并上报，等待有上限', async () => {
+  const dir = mkSandbox('stop-stuck');
+  const cmds = [];
+  const execFile = (cmd, args) => {
+    cmds.push(`${cmd} ${args.join(' ')}`);
+    if (cmd === 'tasklist') return Promise.resolve({ stdout: 'clash-verge.exe   1234 Console 1 10 K\nverge-mihomo.exe   5678 Console 1 10 K\n' });
+    if (cmd === 'reg') return Promise.resolve({ stdout: '    ProxyEnable    REG_DWORD    0x0\n' });
+    return Promise.resolve({ stdout: '' });
+  };
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs, execFile,
+  });
+  await cvr.backup(['verge.yaml']);
+  await cvr.suppressSystemProxy();
+  const t0 = Date.now();
+  const r = await cvr.stop({ restore: true, exitTimeoutMs: 250, pollMs: 50 });
+  assert.ok(Date.now() - t0 < 4000, `等不到退出也不能挂住，实测 ${Date.now() - t0}ms`);
+  assert.equal(r.stillRunning.length, 2, 'clash-verge.exe 与 verge-mihomo.exe 仍存活');
+  assert.equal(r.restored, true, '等不到退出也要把压制还原掉');
+  assert.ok(r.warnings.some((w) => /仍在运行/.test(w)), '要把没杀干净报成警告');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('waitForExit 靠镜像名判断存活，不受 tasklist 中文提示的 GBK 乱码影响', async () => {
+  const dir = mkSandbox('wait-exit-buffer');
+  const nongbk = Buffer.from('信息: 没有运行的任务匹配指定标准。\r\n', 'latin1'); // 真机 stdout 是 Buffer，码页还不是 UTF-8
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs,
+    execFile: () => Promise.resolve({ stdout: nongbk }),
+  });
+  assert.deepEqual(await cvr.waitForExit(['clash-verge.exe', 'verge-mihomo.exe'], { timeoutMs: 300, pollMs: 20 }), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('核心已停但系统代理还开着时，stop 要报出泄漏并给出修复命令，且不自己写注册表', async () => {
+  const dir = mkSandbox('stop-leak');
+  const cmds = [];
+  const execFile = (cmd, args) => {
+    cmds.push(`${cmd} ${args.join(' ')}`);
+    if (cmd === 'reg') return Promise.resolve({ stdout: '    ProxyEnable    REG_DWORD    0x1\n' });
+    return Promise.resolve({ stdout: '' });
+  };
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs, execFile,
+  });
+  await cvr.backup(['verge.yaml']);
+  await cvr.suppressSystemProxy();
+  const r = await cvr.stop({ restore: true, exitTimeoutMs: 200, pollMs: 50 });
+  assert.equal(r.systemProxyEnabled, true);
+  const leak = r.warnings.find((w) => /ProxyEnable/.test(w));
+  assert.ok(leak && /reg add/.test(leak), `泄漏警告里必须带上用户可执行的修复命令，实际：${leak}`);
+  assert.ok(cmds.every((c) => !/^reg (add|delete)\b/i.test(c)), '插件只能读注册表，不能写');
+  assert.ok(cmds.some((c) => /^reg query\b/i.test(c)), '确实做过只读复查');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

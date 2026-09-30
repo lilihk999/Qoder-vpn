@@ -12,6 +12,8 @@ const SUPPRESS_KEYS = ['enable_system_proxy', 'enable_proxy_guard'];
 const DEFAULT_BACKUP_NAMES = ['verge.yaml', 'profiles.yaml'];
 // stop() 只回滚会话级压制；profiles.yaml 属持久用户数据，还原它要用 proxy_restore_config
 const SESSION_RESTORE_NAMES = ['verge.yaml'];
+const STOP_IMAGES = ['clash-verge.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe'];
+const INTERNET_SETTINGS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -226,16 +228,65 @@ class CvrConfig {
     catch { return false; }
   }
 
-  async stop({ restore = true } = {}) {
+  /**
+   * tasklist 的"没有匹配任务"提示是本地语言 + 本地码页（这台机器是 GBK），会读成乱码；
+   * 而表头行一定含镜像名本身，所以只按镜像名子串判活，天然绕开码页问题。
+   */
+  async runningImages(images = STOP_IMAGES) {
+    const alive = [];
+    for (const image of images) {
+      try {
+        const { stdout } = await this.execFile('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH'], { windowsHide: true, timeout: 5000, maxBuffer: 1 << 20 });
+        if (String(stdout || '').includes(image)) alive.push(image);
+      } catch { /* 探测失败当作没在跑：stop 不能被自己的检查卡住 */ }
+    }
+    return alive;
+  }
+
+  async waitForExit(images = STOP_IMAGES, { timeoutMs = 4000, pollMs = 250 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let pending = await this.runningImages(images);
+    while (pending.length && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      pending = await this.runningImages(pending);
+    }
+    return pending;
+  }
+
+  /** 只读复查系统代理开关。插件按设计绝不写注册表，读不到就返回 null。 */
+  async systemProxyEnabled() {
+    try {
+      const { stdout } = await this.execFile('reg', ['query', INTERNET_SETTINGS_KEY, '/v', 'ProxyEnable'], { windowsHide: true, timeout: 5000, maxBuffer: 1 << 20 });
+      const m = /ProxyEnable\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(String(stdout || ''));
+      return m ? Number.parseInt(m[1], 16) !== 0 : null;
+    } catch { return null; }
+  }
+
+  async stop({ restore = true, exitTimeoutMs = 4000, pollMs = 250 } = {}) {
     const killed = [];
-    for (const image of ['clash-verge.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe']) {
+    for (const image of STOP_IMAGES) {
       if (await this.taskkill(image)) killed.push(image);
     }
-    if (!restore) return { killed, restored: false };
+    // 必须等进程真的没了再还原：verge.yaml 里 enable_system_proxy 本来就是 true，
+    // CVR 还在拆除时读到还原后的配置会把系统代理重新打开，而核心已经停了 ——
+    // 浏览器于是全部"连接被拒绝"。真机上就是这么踩到的（缺陷 8）。
+    const stillRunning = await this.waitForExit(STOP_IMAGES, { timeoutMs: exitTimeoutMs, pollMs });
+    const warnings = [];
+    if (stillRunning.length) {
+      warnings.push(`taskkill 后等了 ${exitTimeoutMs}ms，${stillRunning.join(', ')} 仍在运行：配置可能被 CVR 再次回写，稍后用 proxy_status 复查`);
+    }
+    if (!restore) return { killed, restored: false, stillRunning, warnings };
     // 只回滚会话级改动（系统代理压制 / 外部控制开关）。profiles.yaml 里的订阅切换与增删
     // 是用户主动的持久意图，撤销它得靠 proxy_restore_config，不能藏在 stop 的副作用里。
     const r = await this.restore(SESSION_RESTORE_NAMES);
-    return { killed, restored: r.restored.length > 0, restoredList: r.restored };
+    const systemProxyEnabled = await this.systemProxyEnabled();
+    if (systemProxyEnabled === true) {
+      warnings.push(
+        '核心已停止但系统代理仍开启（ProxyEnable=1），浏览器会出现"连接被拒绝"。'
+        + `插件按设计不写注册表，需要时请自行执行：reg add "${INTERNET_SETTINGS_KEY}" /v ProxyEnable /t REG_DWORD /d 0 /f`
+      );
+    }
+    return { killed, restored: r.restored.length > 0, restoredList: r.restored, stillRunning, systemProxyEnabled, warnings };
   }
 
   async restoreFrom(list) {
@@ -267,4 +318,4 @@ class CvrConfig {
   }
 }
 
-module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, SESSION_RESTORE_NAMES, ApiError, defaultWaitForChannel };
+module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, SESSION_RESTORE_NAMES, STOP_IMAGES, ApiError, defaultWaitForChannel };

@@ -21,6 +21,7 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 ## 边界（不要越界）
 
 - **不改系统代理、不开 TUN、不写注册表**。浏览器和游戏不受影响，这是设计前提，不是副作用。
+- `proxy_core_stop` 会等进程真退出再还原配置，并把注册表里的 `ProxyEnable` 只读复查一遍回报（`systemProxyEnabled`）。若它是 `true`，说明系统代理被重新打开而核心已停 —— 浏览器会全线"连接被拒绝"。按 `warnings` 里给出的 `reg add` 命令**让用户自己执行**；插件不代写注册表，也不要擅自改动 `ProxyServer` / `ProxyOverride`。
 - **Qoder 自身的模型与 MCP 请求不走代理**——这是用户的决定，不是性能建议。`proxy_diagnose` 的实测也支持它（`qoder.com` 直连 0.5s、经代理 3.7s）。不要把 `HTTPS_PROXY` 指向本机端口。
 - 会话结束前若用了 `proxy_toolconfig apply`，提醒用户可 `action=revert` 还原；不要静默留着。
 - 订阅 URL 含 token。所有输出里 token 已被脱敏，**不要**在回复里复述原始链接。

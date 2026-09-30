@@ -2109,7 +2109,9 @@ git commit -m "feat: clash-client mihomo REST 语义层(切换后回读确认/�
     - `async suppressSystemProxy() -> {changed: [{key, before, after}]}`（写 `enable_system_proxy: false` + `enable_proxy_guard: false`）
     - `async setExternalController(bool) -> {changed}`（**spec §3.3 明确要求它不单列为工具**，只由 `proxy_core_start(enableExternalControl: true)` 在用户二次确认后调用；除此之外任何调用方都必须先取得用户许可）
     - `async start({scope = 'session', timeoutMs = 25000, enableExternalControl = false}) -> {scope, systemProxySuppressed, externalControlEnabled, channel, ports, waitedMs}`
-    - `async stop({restore = true}) -> {killed, restored}`
+    - `async stop({restore = true, exitTimeoutMs = 4000, pollMs = 250}) -> {killed, restored, restoredList, stillRunning, systemProxyEnabled, warnings}`（**先等进程真退出再还原**，见下面缺陷 8；`systemProxyEnabled` 是还原后对注册表的只读复查）
+    - `async runningImages(images = STOP_IMAGES) -> [镜像名]` / `async waitForExit(images, {timeoutMs, pollMs}) -> [还没退的镜像名]`（用 `tasklist /FI "IMAGENAME eq …" /NH`，按镜像名子串判活）
+    - `async systemProxyEnabled() -> true|false|null`（`reg query HKCU\…\Internet Settings /v ProxyEnable`，**只读**；读不到回 `null`）
     - `async restore(names?) -> {restored: [{name, backupPath}]}`
     - `async restoreFrom(list) -> {restored}`（按显式备份记录还原，`start()` 失败回滚走这条；`restore()` 是它的薄封装）
     - `modifiedSinceBackup(names?) -> {modified: [{name, backupTs}]}`（**同步**方法；逐字节比对当前文件与最近一次备份。spec §3.5 要求 `proxy_status` 显示"当前配置是否被插件改过"，而"存在备份"在还原之后仍为真，所以不能拿 `listBackups().length` 顶替）
@@ -2392,6 +2394,10 @@ const { createTransport } = require('./transport');
 const execFileAsync = promisify(childExecFile);
 const SUPPRESS_KEYS = ['enable_system_proxy', 'enable_proxy_guard'];
 const DEFAULT_BACKUP_NAMES = ['verge.yaml', 'profiles.yaml'];
+// stop() 只回滚会话级压制；profiles.yaml 属持久用户数据，还原它要用 proxy_restore_config
+const SESSION_RESTORE_NAMES = ['verge.yaml'];
+const STOP_IMAGES = ['clash-verge.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe'];
+const INTERNET_SETTINGS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -2599,14 +2605,65 @@ class CvrConfig {
     catch { return false; }
   }
 
-  async stop({ restore = true } = {}) {
+  /**
+   * tasklist 的"没有匹配任务"提示是本地语言 + 本地码页（这台机器是 GBK），会读成乱码；
+   * 而表头行一定含镜像名本身，所以只按镜像名子串判活，天然绕开码页问题。
+   */
+  async runningImages(images = STOP_IMAGES) {
+    const alive = [];
+    for (const image of images) {
+      try {
+        const { stdout } = await this.execFile('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH'], { windowsHide: true, timeout: 5000, maxBuffer: 1 << 20 });
+        if (String(stdout || '').includes(image)) alive.push(image);
+      } catch { /* 探测失败当作没在跑：stop 不能被自己的检查卡住 */ }
+    }
+    return alive;
+  }
+
+  async waitForExit(images = STOP_IMAGES, { timeoutMs = 4000, pollMs = 250 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let pending = await this.runningImages(images);
+    while (pending.length && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      pending = await this.runningImages(pending);
+    }
+    return pending;
+  }
+
+  /** 只读复查系统代理开关。插件按设计绝不写注册表，读不到就返回 null。 */
+  async systemProxyEnabled() {
+    try {
+      const { stdout } = await this.execFile('reg', ['query', INTERNET_SETTINGS_KEY, '/v', 'ProxyEnable'], { windowsHide: true, timeout: 5000, maxBuffer: 1 << 20 });
+      const m = /ProxyEnable\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(String(stdout || ''));
+      return m ? Number.parseInt(m[1], 16) !== 0 : null;
+    } catch { return null; }
+  }
+
+  async stop({ restore = true, exitTimeoutMs = 4000, pollMs = 250 } = {}) {
     const killed = [];
-    for (const image of ['clash-verge.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe']) {
+    for (const image of STOP_IMAGES) {
       if (await this.taskkill(image)) killed.push(image);
     }
-    if (!restore) return { killed, restored: false };
-    const r = await this.restore(DEFAULT_BACKUP_NAMES);
-    return { killed, restored: r.restored.length > 0, restoredList: r.restored };
+    // 必须等进程真的没了再还原：verge.yaml 里 enable_system_proxy 本来就是 true，
+    // CVR 还在拆除时读到还原后的配置会把系统代理重新打开，而核心已经停了 ——
+    // 浏览器于是全部"连接被拒绝"。真机上就是这么踩到的（缺陷 8）。
+    const stillRunning = await this.waitForExit(STOP_IMAGES, { timeoutMs: exitTimeoutMs, pollMs });
+    const warnings = [];
+    if (stillRunning.length) {
+      warnings.push(`taskkill 后等了 ${exitTimeoutMs}ms，${stillRunning.join(', ')} 仍在运行：配置可能被 CVR 再次回写，稍后用 proxy_status 复查`);
+    }
+    if (!restore) return { killed, restored: false, stillRunning, warnings };
+    // 只回滚会话级改动（系统代理压制 / 外部控制开关）。profiles.yaml 里的订阅切换与增删
+    // 是用户主动的持久意图，撤销它得靠 proxy_restore_config，不能藏在 stop 的副作用里。
+    const r = await this.restore(SESSION_RESTORE_NAMES);
+    const systemProxyEnabled = await this.systemProxyEnabled();
+    if (systemProxyEnabled === true) {
+      warnings.push(
+        '核心已停止但系统代理仍开启（ProxyEnable=1），浏览器会出现"连接被拒绝"。'
+        + `插件按设计不写注册表，需要时请自行执行：reg add "${INTERNET_SETTINGS_KEY}" /v ProxyEnable /t REG_DWORD /d 0 /f`
+      );
+    }
+    return { killed, restored: r.restored.length > 0, restoredList: r.restored, stillRunning, systemProxyEnabled, warnings };
   }
 
   async restoreFrom(list) {
@@ -2638,7 +2695,7 @@ class CvrConfig {
   }
 }
 
-module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, ApiError, defaultWaitForChannel };
+module.exports = { CvrConfig, patchScalar, SUPPRESS_KEYS, DEFAULT_BACKUP_NAMES, SESSION_RESTORE_NAMES, STOP_IMAGES, ApiError, defaultWaitForChannel };
 
 ```
 
@@ -6653,7 +6710,7 @@ Expected: 三项都干净。
 这一步只能由用户做（重启会中断当前会话）。请用户重启后确认两件事：
 
 1. **验收 4**：新开对话里 17 个工具可见（**实测前缀 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__`**）；在 Clash Verge 关闭的状态下调用 `proxy_nodes` / `proxy_test`，返回 `core_not_running`/`channel_unavailable` + 修复提示而不是崩或超时挂起。**实测结果：达成**，但同时暴露缺陷 5（`installed:false`）与缺陷 7（文案工具名错）。
-2. **验收 9**：CVR 未运行时，新会话开头**看不到**任何代理相关的 `additionalContext`（本会话最开头那段 "Workspace search routing" 是别的插件注入的，代理提示应该完全没有）；启动 CVR 后的新会话才应出现"本机代理端口可连通"这段提示。**实测结果：现象符合但当时不构成证据** —— 日志显示 hook 被 Qoder 调用了却 `exit_code=255`（缺陷 6：中文注释崩掉 cmd.exe 批处理解析），`node` 从未执行，所以"没注入"既可能是判断正确也可能是进程根本没跑起来。修复后必须重跑一次才算。
+2. **验收 9**：CVR 未运行时，新会话开头**看不到**任何代理相关的 `additionalContext`（本会话最开头那段 "Workspace search routing" 是别的插件注入的，代理提示应该完全没有）；启动 CVR 后的新会话才应出现"本机代理端口可连通"这段提示。**实测结果：现象符合但当时不构成证据** —— 日志显示 hook 被 Qoder 调用了却 `exit_code=255`（缺陷 6：中文注释崩掉 cmd.exe 批处理解析），`node` 从未执行，所以"没注入"既可能是判断正确也可能是进程根本没跑起来。**最终结果：闭环，且不必第三次重启。** 修复后用 `mcp__builtin__create_chat_session` 拉起全新 Qoder 会话（`startup` 命中 matcher）复验两条分支：核心在跑时（15:15）新会话逐字引用到注入原文、工具名是可调用的全名；核心停掉后（15:16）新会话明确回答"没有"，并逐块排除了静态工具注册表、技能清单、跨会话记忆这三处会混淆判断的来源。
 
 把用户反馈逐字记进验收文档。若 hook 没生效，按 probe 文档 `02-hooks.md` 的结论排查顺序：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 5 秒内是否退出。**再加两条本轮学到的**：先看 `~/.qoder/logs/latest/qodercli.log` 里的 `hook.started` / `hook.finished`（能区分"没调用"和"调用即崩"，`stderr` 也在同一条日志里）；以及 launcher 必须是纯 ASCII。
 
@@ -6689,6 +6746,8 @@ git commit -m "docs: qoder-vpn-proxy 验收记录与 spec 未验证项结论"
 **Step 6 顺手补了文档侧的凭据泄露**：spec §2 的事实表原本写了完整的旧/新订阅 URL 路径段，已换成 `<旧订阅路径>` / `<新订阅路径>`。计划里的凭据 grep 命令仍保留 token/路径的 8 字符前缀，因为它们是搜索词本身，换成占位符会让验证命令失去可复现性。
 
 **Step 10 的范围比计划多了一点**：除验收文档外，同时把 spec §8 的 6 条"未验证项"逐条改成实测结论，并新增 `probes/03-plugin-install.md`（`@local` 安装的三处写入、备份路径、以及重启失败时的退路）。
+
+**Step 8 的 `stop()` 时序会把整机弄坏（缺陷 8，验收文档记在验收 3"破防记录"）**：本计划的 `stop()` 是 `taskkill` 循环之后直接 `restore`。真机上 15:16 那次停止之后，`ProxyEnable` 变成 `0x1` 而 7897 已无人监听 —— CVR 还在拆除中就读到了刚还原的 `enable_system_proxy: true`，替插件把系统代理打开了。插件本身一行注册表代码都没有，所以任何"代码里没有写注册表"的静态检查都证明不了设计前提成立。改法（已同步进上面的代码块）：`taskkill` → `waitForExit()` 轮询 `tasklist /FI "IMAGENAME eq <image>" /NH` → 才 `restore(SESSION_RESTORE_NAMES)`；等不到也照样还原（不能把压制留在用户机器上），但回 `stillRunning` + 警告；还原后只读复查 `reg query … /v ProxyEnable`，若仍为 1 就把 `reg add … /d 0 /f` 原文交给用户执行，插件不代写。`test/cvr-config.test.js` 末尾追加 4 条测试（还原必须晚于最后一次轮询且只还原一次 / 杀不掉时有上限且仍还原并上报 / 泄漏必须报出且事件里不得出现 `reg add|delete` / `waitForExit` 吃 GBK Buffer）。红 → 修 → 全量 **165 / 0 fail**；真机 `start→stop` 两轮 `ProxyEnable` 恒 `0x0`。**写这一类代码的规矩**：只要会杀掉一个自己会改配置的外部进程，"杀"与"改回配置"之间必须有一次"它真的没了吗"。
 
 ## 依赖顺序（执行时不可打乱）
 
