@@ -6052,6 +6052,7 @@ Expected: `# tests 144`（Task 14 收尾时 125，本任务净增 19：protocol 
 - Create: `qoder-vpn-proxy/server/session-start.js`
 - Create: `qoder-vpn-proxy/skills/vpn-proxy/SKILL.md`
 - Create: `qoder-vpn-proxy/README.md`
+- Test: `qoder-vpn-proxy/test/session-start.test.js`（Step 3 给出内容）
 - Modify: `~/.qoder/plugins/installed_plugins_v2.json`、`~/.qoder/settings.json`（Step 7，先备份）
 
 **Interfaces:**
@@ -6137,28 +6138,171 @@ main();
 Run: `node server/session-start.js`
 Expected: 打印一个含 `hookSpecificOutput` 的 JSON 对象。CVR 未运行时应打印 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":""}}`（空串 = 不注入；验收 9 靠这条）。
 
+**实测**（本机真跑，CVR 未运行）：`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":""}}`，与预期逐字一致。
+
+这条只测到了"没装/没跑"的一支，而验收 9 依赖的正是"什么时候不该注入"。补 `test/session-start.test.js` 三条，把 hook 当子进程跑（`discover()` 读的是 `process.env`，所以沙箱靠 `QVP_CONFIG_DIR` / `QVP_INSTALL_CANDIDATES` / `APPDATA` / `HOME` 注入，不碰本机真配置）：
+
+```js
+'use strict';
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
+
+const HOOK = path.join(__dirname, '..', 'server', 'session-start.js');
+
+/** 沙箱里造一个"装了 CVR 且 runtime 端口写在 config.yaml"的配置目录 */
+function sandbox({ mixedPort }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-hook-'));
+  const configDir = path.join(root, 'clash-verge');
+  const installDir = path.join(root, 'program');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(installDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'config.yaml'), `mixed-port: ${mixedPort}\nmode: rule\nsecret: set-your-secret\n`);
+  fs.writeFileSync(path.join(configDir, 'verge.yaml'), `enable_system_proxy: false\nenable_tun_mode: false\nenable_external_controller: false\n`);
+  fs.writeFileSync(path.join(configDir, 'profiles.yaml'), `# 空清单\n`);
+  fs.writeFileSync(path.join(installDir, 'clash-verge.exe'), '');
+  return {
+    root,
+    env: {
+      ...process.env,
+      APPDATA: root,
+      appdata: root,
+      HOME: path.join(root, 'Home'),
+      USERPROFILE: path.join(root, 'Home'),
+      QVP_CONFIG_DIR: configDir,
+      QVP_INSTALL_CANDIDATES: installDir,
+    },
+  };
+}
+
+function runHook(env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [HOOK], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, out, err }));
+    child.stdin.end('{}');
+  });
+}
+
+/** 占住一个真实端口，返回端口号；stop() 释放 */
+async function occupy() {
+  const server = net.createServer();
+  await new Promise((res) => server.listen(0, '127.0.0.1', res));
+  const port = server.address().port;
+  return { port, stop: () => new Promise((res) => server.close(res)) };
+}
+
+test('hook 契约：stdout 永远是单个带 hookEventName 的 JSON 对象，未安装时 additionalContext 为空串', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-hook-bare-'));
+  const env = {
+    ...process.env,
+    APPDATA: root,
+    appdata: root,
+    HOME: path.join(root, 'Home'),
+    USERPROFILE: path.join(root, 'Home'),
+    QVP_INSTALL_CANDIDATES: path.join(root, 'no-such-dir'),
+  };
+  const { code, out } = await runHook(env);
+  assert.equal(code, 0);
+  const msg = JSON.parse(out);
+  assert.equal(Object.keys(msg).join(), 'hookSpecificOutput');
+  assert.equal(msg.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CVR 时不注入任何文本');
+});
+
+test('端口可连通才提示，给出内联前缀与工具名而不是凭记忆写端口', async () => {
+  const { port, stop } = await occupy();
+  try {
+    const { env } = sandbox({ mixedPort: port });
+    const { out } = await runHook(env);
+    const ctx = JSON.parse(out).hookSpecificOutput.additionalContext;
+    assert.ok(ctx.length > 0, '端口在听，应该给出提示');
+    assert.match(ctx, new RegExp(`127\\.0\\.0\\.1:${port}`), '端口来自探测结果');
+    assert.match(ctx, /HTTP_PROXY=http:\/\/127\.0\.0\.1:/);
+    assert.match(ctx, /mcp__vpn-proxy__proxy_diagnose/);
+    assert.doesNotMatch(ctx, /7897/, '不能出现写死的默认端口');
+  } finally {
+    await stop();
+  }
+});
+
+test('装了 CVR 但代理端口没在听时不提示（避免让用户照着前缀撞上拒绝）', async () => {
+  const { port, stop } = await occupy();
+  await stop();
+  const { env } = sandbox({ mixedPort: port });
+  const { out } = await runHook(env);
+  assert.equal(JSON.parse(out).hookSpecificOutput.additionalContext, '');
+});
+```
+
+Run: `node --test test/session-start.test.js`
+Expected: PASS（3 个测试）。第二条会真的起一个监听端口再让 hook 去探 —— hook 的价值就在"只在能连时说话"，用假返回值测它等于没测。
+
 - [ ] **Step 4: 写 hook 包装（cmd/bash 双语种 + `hooks.json`）**
 
-`hooks/run-hook.cmd`（沿用已验证的 superpowers 双语种写法：cmd 段被 bash 当注释、`:` 行被 cmd 忽略）：
+`hooks/run-hook.cmd`（沿用已验证的 superpowers 双语种写法：首行 `: << 'CMDBLOCK'` 让 bash 把批处理段当 heredoc 吞掉，cmd.exe 则顺序执行到 `exit /b` 就停）：
 
 ```bat
 : << 'CMDBLOCK'
 @echo off
-REM 由 Qoder 在 Windows 下直接调用；把参数交给 node
-node "%~dp0\..\server\index.js" %* >nul 2>&1
+REM 双语种 wrapper：Windows 下 cmd.exe 跑批处理段（找到 bash 再跑同名脚本），
+REM Unix 下 : 是 no-op，直接落到文件末尾的 bash 段。
+REM 用法：run-hook.cmd <脚本名> [参数...]
+
+if "%~1"=="" (
+    echo run-hook.cmd: missing script name >&2
+    exit /b 1
+)
+
+set "HOOK_DIR=%~dp0"
+
+if exist "C:\Program Files\Git\bin\bash.exe" (
+    "C:\Program Files\Git\bin\bash.exe" "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    exit /b %ERRORLEVEL%
+)
+if exist "C:\Program Files (x86)\Git\bin\bash.exe" (
+    "C:\Program Files (x86)\Git\bin\bash.exe" "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    exit /b %ERRORLEVEL%
+)
+
+where bash >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    bash "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    exit /b %ERRORLEVEL%
+)
+
+REM 找不到 bash 就静默退出：插件的 MCP 工具照用，只是本次会话没有开场提示
 exit /b 0
 CMDBLOCK
-# 非 Windows 走这里
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EVENT="${1:-session-start}"
-node "$SCRIPT_DIR/../server/${EVENT}.js"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_NAME="$1"
+shift
+exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"
 ```
+
+草稿这一段写的是 `node "%~dp0\..\server\index.js" %* >nul 2>&1` —— **照抄会把 MCP 服务端当 hook 跑**：`index.js` 起来等 stdin、往 stdout 吐 JSON-RPC，hook 却在等一个 `hookSpecificOutput` 对象；`>nul` 还会把它冲掉，表现是"插件装了但开场提示永远不出现"，而且每次会话多挂一个空转的 node 进程，直到 5 秒超时被杀。落地按 superpowers 6.3.0 里已在跑的 wrapper 来：cmd 段只负责**找到 bash**（Git for Windows 标准路径 → PATH 上的 bash），然后调用同目录下与参数同名的 hook 脚本；三条都没命中时 `exit /b 0` 静默放行（没有 bash 的机器上 MCP 工具照常可用，只是没有开场提示）。
+
+另外在仓库根加 `.gitattributes`（`* text eol=lf`）。本机 `core.autocrlf=true`，没有这一行 checkout 出来的 hook 脚本就是 CRLF：`<< 'CMDBLOCK'` 的结束标记带上 `\r` 便匹配不上，整个文件被当 heredoc 吞掉，bash 段一行都不执行 —— 表现只是"开场提示没出现"，没有任何报错可看。已装好的 superpowers 6.3.0 那份 `run-hook.cmd` 实测是纯 LF（0 个 CRLF / 46 个 LF），说明这就是 Qoder 在 Windows 上跑这份 wrapper 的行尾。同理 LF 也是 `test/fixtures/cvr-*.yaml` 与备份一致性校验的前提，那些地方是逐字节比较。
 
 `hooks/session-start`：
 
 ```bash
 #!/usr/bin/env bash
-exec node "$(dirname "$0")/../server/session-start.js"
+# 由 run-hook.cmd 调起；真正的判断在 server/session-start.js 里
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "${SCRIPT_DIR}/../server/session-start.js" "$@"
 ```
 
 `hooks/hooks.json`：
@@ -6228,6 +6372,16 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 - [ ] **Step 6: 写 `README.md`**
 
 至少包含：安装位置与依赖（Clash Verge Rev 已装 + Node ≥ 18）、17 个工具清单表、`scope=session` 与 `scope=global` 的差别、`proxy_toolconfig` 会改哪两个用户级文件如何还原、数据目录 `~/.qoder/vpn-proxy/` 里有什么（`subscriptions.json` / `backups` / `.trash` / `logs/mcp.log`）、如何完全卸载（关插件 + 删数据目录 + `proxy_toolconfig action=revert`）。
+
+落地时补两条草稿没点名但属于设计前提的内容，并核了两处事实：
+
+- 开篇加 **"它不会碰什么"**：不改系统代理、不开 TUN、不写注册表，因此浏览器与游戏不受影响；只连 `127.0.0.1` 与本机命名管道；token 恒为 `<redacted>`，`proxy_nodes` 只回节点名。这条是用户最初提的问题（"会不会影响浏览器和游戏"）的正面回答，藏在 spec 里没人会去翻。
+- 卸载最后一步给**可复核的命令**而不是"确认已还原"：`git config --global --get-regexp 'http\..*\.proxy'` 应为空、`~/.npmrc` 里不应再有 `# >>> qoder-vpn-proxy >>>`。
+- npmrc 托管块的标记串从 `toolconfig.js` 的 `MARK_BEGIN` / `MARK_END` 抄来（`# >>> qoder-vpn-proxy >>> (由 proxy_toolconfig 维护，请勿手工编辑此块)` / `# <<< qoder-vpn-proxy <<<`），不是凭印象写的 `begin/end`；顺带核实了 revert 在"文件本来就是我们创建的"时会删文件而不留空文件。
+- 17 行工具表用脚本对过：`TOOL_NAMES` 里每个名字都在表里出现，`SKILL.md` 引用的 9 个名字都在 `TOOL_NAMES` 里 —— 文档与代码的漂移靠这条检查拦，不靠重读。
+
+Run: `node -e "JSON.parse(require('fs').readFileSync('.qoder-plugin/plugin.json','utf8')); JSON.parse(require('fs').readFileSync('.mcp.json','utf8')); JSON.parse(require('fs').readFileSync('hooks/hooks.json','utf8'))"`
+Expected: 三个清单都能解析。三个 JSON 里只会有插件自身的名字与路径，不该出现订阅地址或 token。
 
 - [ ] **Step 7: 安装注册（先备份两个 JSON，再改）**
 
