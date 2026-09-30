@@ -1,8 +1,14 @@
 : << 'CMDBLOCK'
 @echo off
-REM 双语种 wrapper：Windows 下 cmd.exe 跑批处理段（找到 bash 再跑同名脚本），
-REM Unix 下 : 是 no-op，直接落到文件末尾的 bash 段。
-REM 用法：run-hook.cmd <脚本名> [参数...]
+REM Cross-platform polyglot wrapper for hook scripts.
+REM On Windows: cmd.exe runs the batch portion, which finds bash and delegates.
+REM On Unix: the shell reads this as a script (: is a no-op in bash).
+REM
+REM KEEP THIS FILE PURE ASCII. cmd.exe reads the batch portion under the OEM
+REM codepage (GBK on this machine); multi-byte UTF-8 comments desynchronize its
+REM line parser and the hook dies with exit 255 before node ever runs.
+REM
+REM Usage: run-hook.cmd <script-name> [args...]
 
 if "%~1"=="" (
     echo run-hook.cmd: missing script name >&2
@@ -26,7 +32,8 @@ if %ERRORLEVEL% equ 0 (
     exit /b %ERRORLEVEL%
 )
 
-REM 找不到 bash 就静默退出：插件的 MCP 工具照用，只是本次会话没有开场提示
+REM No bash found - exit silently rather than error
+REM (plugin still works, just without SessionStart context injection)
 exit /b 0
 CMDBLOCK
 

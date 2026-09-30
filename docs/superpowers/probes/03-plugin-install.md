@@ -46,6 +46,8 @@ qoder-vpn-proxy@local => [{"scope":"user",
 
 `@local` 这个 source 是否真的被 Qoder 接受、17 个 `mcp__vpn-proxy__*` 工具是否出现、SessionStart hook 是否只在 CVR 运行时注入 —— 三条都是重启后才能看的，记录在 `docs/superpowers/verification/2026-09-30-acceptance.md` §验收 4 / §验收 9 的待验证清单里。
 
+**重启后的实测（同日两次重启）**：`@local` 被接受，17 个工具出现，但**前缀不是预测的 `mcp__vpn-proxy__*`，而是 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__*`** —— Qoder 把插件 source 与插件名两段都拼进工具名，所以任何给模型看的文案（包括 hook 注入的提示）都必须照 `mcp_list` 的输出抄，不能按插件 id 拼。第三条最初"看起来符合"其实是假阳性，连吃两个缺陷：MCP/hook 子进程环境里没有 `APPDATA`（发现层退化成"没装 CVR"），以及 `run-hook.cmd` 批处理段里的中文注释让 cmd.exe 按 GBK 码页错位解析、hook 每次 `exit_code=255` 而 `node` 从未执行 —— 日志里 `hook.started` 与 `hook.finished success=false` 成对出现，是能区分"没调用"和"调用即崩"的唯一依据。排查顺序因此要在本节原有三条之前加一条：**先翻 `~/.qoder/logs/latest/qodercli.log` 的 `hook.*` 行**。
+
 **如果重启后插件不出现**，按这个顺序退：
 1. 从 `settings.json.qvp-bak` / `installed_plugins_v2.json.qvp-bak` 还原两处写入（还原前再各备份一次当前态）。
 2. 改用「已验证可行的 source」：把插件放进 marketplace/bundler 实际使用的目录结构，或退回 `.mcp.json` 单文件方案（只声明 MCP server、不带 hook 与 skill）。

@@ -326,11 +326,64 @@ assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CV
 2. **`@local` source 能否加载 → 能**。`installed_plugins_v2.json` 里 `qoder-vpn-proxy@local`（值是**数组**）+ `settings.json` 的 `enabledPlugins` 这一组合被 Qoder 正常识别，插件的 skill 同时出现在技能列表里。spec §8 最后一项就此结掉。
 3. **"CVR 未运行时不注入" → 现象符合，但这条**不能算已证明**，本项仍是开放的。
 
-第 3 条要说清楚为什么不算数。本会话收到的 SessionStart 注入只有环境路由那一段，确实没有任何代理文本；CVR 也确认真的没跑（`tasklist` 无 `clash-verge`/`verge-mihomo`，`netstat` 上 7897/7898/7899 都没监听）。**但缺陷 5 让这个观察失去区分力**：修复前 `resolveConfigDir` 在 Qoder 的子进程环境里拿不到 `APPDATA`，hook 里的 discovery 会一路退到"这台机器没装 CVR"，于是**无论 CVR 跑没跑都必然输出空串**。观测到的现象和"设计正确"之间断了一环 —— 这是假阳性，不是验证。
+第 3 条要说清楚当时为什么不算数。本会话收到的 SessionStart 注入只有环境路由那一段，确实没有任何代理文本；CVR 也确认真的没跑（`tasklist` 无 `clash-verge`/`verge-mihomo`，`netstat` 上 7897/7898/7899 都没监听）。**但缺陷 5 让这个观察失去区分力**：修复前 `resolveConfigDir` 在 Qoder 的子进程环境里拿不到 `APPDATA`，hook 里的 discovery 会一路退到"这台机器没装 CVR"，于是**无论 CVR 跑没跑都必然输出空串**。观测到的现象和"设计正确"之间断了一环 —— 这是假阳性，不是验证。（第二次重启后的实测见下一节：真正让 hook 吐空的是缺陷 6，`node` 那一步压根没执行到。）
 
 要真正把验收 9 结掉，需要两步（都要用户配合）：① **再重启一次 Qoder**，让新代码进入 hook 与 MCP 进程；② 开着 CVR 触发一次 SessionStart（新会话，或 `/clear`、`/compact` —— matcher 是 `startup|resume|clear|compact`），确认注入出现"本机代理端口可连通"那段；然后再停掉 CVR 复看一次不注入。在①之前，"不注入"这个观察无论重复多少次都不构成证据。
 
-若 hook 压根没被调用，按 `docs/superpowers/probes/02-hooks.md` §4 的顺序查：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 是否 5 秒内退出。
+**第二次重启后的实测（14:58，另发现缺陷 6 与缺陷 7）**
+
+第 ① 步做到了，而且立刻见效：`mcp_get(proxy_restore_config)` 的 schema 已带 `prune / keepPerName / olderThanDays / dryRun`，会话内 `proxy_status` 回 `installed:true`、`configDir` 正确、`warnings:[]` —— 缺陷 5 与 `prune` 都进了正在服务的那个进程。
+
+但第 ② 步之前，先按 §333 给的排查顺序去日志里查"hook 压根没被调用"这一支，结论是**调用到了，但每次都崩**：
+
+```
+$ grep vpn-proxy ~/.qoder/logs/latest/qodercli.log | grep hook
+14:58:19.648 INFO  hook.started  hook_name="SessionStart:startup" source="plugins" hook_index=3 total_hooks=3
+                  display_text="\"${QODER_PLUGIN_ROOT}/hooks/run-hook.cmd\" session-start"
+                  plugin_id="qoder-vpn-proxy@local"
+14:58:19.818 WARN  [HookRunner] Hook "..." (event: SessionStart) exited with code 255.
+                  stderr: 文件名、目录名或卷标语法不正确。      ← GBK 码页下的 cmd.exe 报错
+14:58:19.819 WARN  hook.finished ... success=false duration_ms=170 exit_code=255
+```
+
+同一次启动里，superpowers 插件的 SessionStart hook **命令串形态完全相同**（`${QODER_PLUGIN_ROOT}/hooks/run-hook.cmd session-start`，同样 LF 换行、同样的 `: << 'CMDBLOCK'` 双语种 wrapper），却 `success=true exit_code=0`。逐字节对比两份 `run-hook.cmd`，唯一差异是**我的那份批处理段里写了中文注释**。
+
+最小复现（把 Qoder 的调用形态照抄成脚本跑两个插件）：
+
+```
+$ bash qvp-hook-repro.sh 'C:\Users\...\local\qoder-vpn-proxy\0.1.0' session-start
+== exit=255
+== output: <HOME>\...>OK_DIR%~1"   ← cmd.exe 已经错位到行中间
+                        ...>ram Files (x86)\Git\bin\bash.exe" (
+$ bash qvp-hook-repro.sh 'C:\Users\...\superpowers\6.3.0' session-start
+== exit=0    （正常吐出 additionalContext）
+```
+
+根因（缺陷 6）：cmd.exe 用**当前 OEM 码页**（本机 GBK/936）读批处理文件，UTF-8 中文注释被按双字节切分，行首偏移就此错位，后续每一行都从中间开始解析 —— 于是 `if exist "C:\Program Files\Git\bin\bash.exe" (` 被读成 `ram Files (x86)\...`，最终撞出"文件名、目录名或卷标语法不正确"并以 255 退出。**`node server/session-start.js` 从未被执行**，所以修复缺陷 5 之后"CVR 没跑 ⇒ 不注入"依然是**二次假阳性**：真正的原因是 hook 进程根本没跑到判断那一步。
+
+修复按 TDD 走：先加断言"launcher 必须零非 ASCII 字节"的测试（红：`发现 216 个非 ASCII 字节，首个在第 3 行`），再把 `hooks/run-hook.cmd` 的注释全部改回英文（文件里留了一条 `KEEP THIS FILE PURE ASCII` 说明为什么），全量 **161/161** 绿。同步进安装副本后用同一个复现脚本回归：
+
+```
+== exit=0
+== output: {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":""}}   ← CVR 未运行，正确不注入
+```
+
+正向分支用 `proxy_core_start`（scope=session，压制系统代理）临时拉起 CVR 再跑一次：
+
+```
+additionalContext = "本机 Clash Verge 代理端口 127.0.0.1:7897 当前可连通（插件 qoder-vpn-proxy 检测）。
+                     直连失败时，联网命令请加前缀：HTTP_PROXY=http://127.0.0.1:7897 ... "
+$ reg query "HKCU\...\Internet Settings" → ProxyEnable 0x0     ← 前提仍然成立：拉起 CVR 没打开系统代理
+$ proxy_core_stop → killed [clash-verge.exe, verge-mihomo.exe], restoredList 只有 verge.yaml（profiles.yaml 不再被撤销）
+$ 再跑一次 hook → additionalContext = ""                        ← 停核心后回到不注入
+```
+
+顺带查出缺陷 7：注入文案里把工具写成 `mcp__vpn-proxy__proxy_diagnose`，而 Qoder 实际暴露的全名是 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose`（见本节第 1 条）—— 模型照文案调用必然找不到工具。已改文案并同步。
+
+**验收 9 现在的状态**：负向分支（CVR 未运行 ⇒ 空串）与正向分支（CVR 运行 ⇒ 注入端口与前缀）都已在**修好的 launcher 上**取得证据，且 hook 被 Qoder 调用这一点由日志直接证明。**唯一还没有的真机环节**：带非空 `additionalContext` 的那次注入出现在**正在运行的 Qoder 会话开头**（需要在 CVR 运行的同时再触发一次 SessionStart）。superpowers 同形状的 hook 本会话确实落地了，说明通路没问题，但这一条不该替本插件代劳 —— 留作可选的最后一步。
+
+若还想复核，按 `docs/superpowers/probes/02-hooks.md` §4 的顺序查：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 是否 5 秒内退出。现在再加一条：**launcher 必须是纯 ASCII**。
+
 
 ---
 
@@ -349,7 +402,7 @@ assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CV
 
 ---
 
-## 本轮真机跑出来的 5 个缺陷（前 4 个同源：测试替身没像真机；第 5 个：宿主环境没像开发 shell）
+## 本轮真机跑出来的 7 个缺陷（1–4 同源：测试替身没像真机；5–7 同源：宿主环境/命名没像开发 shell）
 
 | 缺陷 | 触发方式 | 修复 |
 |---|---|---|
@@ -358,8 +411,10 @@ assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CV
 | 备份按字典序排 → `restore` 挑到过期那份（目录里混了两种时间戳格式） | `listBackups` 打印的"最新"其实不是最新 | `cvr-config.js` + `store.js` 改按 `mtimeMs` 排，名字作 tiebreak；测试用 `utimesSync` 钉 mtime 复现 |
 | `stop()` 连 `profiles.yaml` 一起回滚 → 撤销用户刚激活的订阅；`activate` 因 reload 404 被误报失败 | `proxy_core_stop` 后当前订阅变回旧的那条 | `stop` 收窄到 `SESSION_RESTORE_NAMES=['verge.yaml']`；`activate` 改回 `{reloaded, needsRestart, note}` 如实上报 |
 | **（第 5 个，类别不同）Qoder 拉起的 MCP/hook 子进程没有 `APPDATA`** → `resolveConfigDir` 退到 `~/.config`，装着 CVR 的机器被报成未安装，hook 永不注入 | 会话内调 `proxy_status` 回 `installed:false` + `warnings:["…APPDATA=空…"]`，而同一段代码在 CLI 下回 `installed:true` | `discovery.js` 在 `APPDATA` 缺失时从 home 派生 `AppData/Roaming`（有 `APPDATA` 时仍以它为准）。前 4 个是"测试替身不像真机"，这一个是**"宿主环境不像开发 shell"** —— 单测与 CLI 手测都摸不到，只有真在 Qoder 里调用才暴露 |
+| **（第 6 个）`hooks/run-hook.cmd` 里的中文注释让 cmd.exe 解析错位 → hook 每次 exit 255，`node` 从未执行** | Qoder 日志 `hook.finished success=false exit_code=255` + stderr"文件名、目录名或卷标语法不正确"；同形状的 superpowers launcher 同一次启动里 exit 0。把 Qoder 的调用形态抄成脚本即可稳定复现 | launcher 全文改回纯 ASCII（cmd.exe 按 OEM 码页 GBK 读批处理，UTF-8 多字节注释会把行首偏移切错）。新增测试断言"launcher 零非 ASCII 字节"，红 → 修 → 全量 161/0。**教训**：双语种 polyglot launcher 的批处理段只能放 ASCII；解释性中文放到 bash 段或 README 里 |
+| **（第 7 个）注入文案里的工具名是猜的**：写成 `mcp__vpn-proxy__proxy_diagnose`，Qoder 实际暴露 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose` | 会话内列出工具时看到真实前缀（`mcp_list` 返回 17 个全名），与 hook 文案对不上 —— 模型照文案调用必然"工具不存在" | `session-start.js` 文案改用实测全名，先把测试断言换成全名跑红再修。**教训**：给模型看的工具名必须从运行时列出来的清单里抄，不能按插件名拼 |
 
-前 4 个都先写红测试、改代码、再跑全量（147 → 148 → 150 → 152 → 153 → **154**，`# fail 0`），并且**同时把 fake 改成和真机一样**——否则同类 bug 下次还会从 fake 的缝里钻出来。第 5 个在重启后补测时发现，红测试 + 修复后全量 **160 / 0 fail**（中间加 Task 18 的 prune 5 条：154 → 159 → 160）。
+前 4 个都先写红测试、改代码、再跑全量（147 → 148 → 150 → 152 → 153 → **154**，`# fail 0`），并且**同时把 fake 改成和真机一样**——否则同类 bug 下次还会从 fake 的缝里钻出来。第 5 个在重启后补测时发现，红测试 + 修复后全量 **160 / 0 fail**（中间加 Task 18 的 prune 5 条：154 → 159 → 160）。第 6、7 个在第二次重启时发现，同样红 → 修 → **161 / 0 fail**。
 
 ---
 
@@ -388,7 +443,7 @@ cmp server/*.js test/*.js README.md skills/vpn-proxy/SKILL.md .qoder-plugin/plug
 
 ## 未闭环清单
 
-1. ~~验收 4 的 Qoder 集成层~~ —— **已闭环**：重启后工具可见性 17/17、`@local` source 加载成功，实测还揪出缺陷 5（见"重启后补测"）。**验收 9 仍未闭环**：两条原因，一是缺陷 5 让"核心关闭 ⇒ 不注入"的观测成了假阳性，二是本会话的 MCP 进程启动于 12:38、文件同步在 13:54，服务端仍是旧代码，`prune` 与新发现逻辑要**再重启一次 Qoder** 才在会话内生效。
+1. ~~验收 4 的 Qoder 集成层~~ —— **已闭环**：第二次重启后会话内实测 `installed:true`、schema 带 `prune`，缺陷 5 与 prune 都进了正在服务的进程。**验收 9 已按修好的 launcher 取得正负两支证据**（见该节"第二次重启后的实测"）：负向 = CVR 停 ⇒ 空串；正向 = `proxy_core_start` 拉起 ⇒ 注入 7897 那段且 `ProxyEnable` 仍 `0x0`。剩下的唯一环节是"带非空文本的注入出现在正在运行的 Qoder 会话开头"，需要在 CVR 运行的同时再触发一次 SessionStart（重启或 `/clear`）—— 可选，不是阻塞。
 2. `proxy_test` 默认 5000ms timeout 在冷核心上误报 —— 已记录，未改。
 3. ~~`backups/profiles.yaml.*` 含原始 token，无保留期策略~~ —— **已由用户决定并实现（①，计划 Task 18）**：`proxy_restore_config prune=true`。残留局限见上面"后记"。
 4. ~~CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值~~ —— **用户已定（②追问后）："注册表不要清掉"**。两个值保持现状、插件与用户都不动它们；这与"插件从不写注册表"的前提一致，也意味着本次收尾未产生任何对用户机器的不可逆改动。当前状态：`ProxyEnable=0x0`，两值惰性（系统代理仍关闭，浏览器/游戏不受影响）。

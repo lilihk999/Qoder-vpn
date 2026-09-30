@@ -18,7 +18,7 @@ async function main() {
     const ctx = [
       `本机 Clash Verge 代理端口 127.0.0.1:${rt.ports.mixed} 当前可连通（插件 qoder-vpn-proxy 检测）。`,
       `直连失败时，联网命令请加前缀：${inlinePrefix(env)}`,
-      `npm/git 想长期走代理用 mcp__vpn-proxy__proxy_toolconfig(action=apply)；哪些域名真需要代理用 mcp__vpn-proxy__proxy_diagnose 判定。`,
+      `npm/git 想长期走代理用 mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_toolconfig(action=apply)；哪些域名真需要代理用 mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_diagnose 判定。`,
       `注意：系统代理未开启，本提示只影响命令行工具；Qoder 自身请求建议保持直连。`,
     ].join(' ');
     return emit(ctx);
