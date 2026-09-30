@@ -1,5 +1,7 @@
 'use strict';
 
+const { redactText } = require('./redact');
+
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'qoder-vpn-proxy', version: '0.1.0' };
 
@@ -8,7 +10,8 @@ const INSTRUCTIONS = [
   '常用顺序：proxy_status 看现状 -> proxy_core_start 启动（默认 scope=session，不动系统代理）-> proxy_nodes/proxy_test/proxy_select 选节点 -> proxy_diagnose 验证直连与经代理差异。',
   '要让本会话的 npm/git 实际走代理用 proxy_toolconfig(action=apply)；只想单次命令用 proxy_env 拿前缀。',
   '订阅可自主维护：proxy_subscriptions 列清单，add/edit/update/activate/remove 管理，edit 用于机场换地址或轮换 token。',
-  '代理端口一律来自返回值，不要凭记忆写 7897。所有 URL 中的 token 已被脱敏，原始 token 只在抓取时使用。',
+  '代理端口一律来自返回值，不要凭记忆写 7897。',
+  '订阅地址是凭据：工具输出与日志里主机名、路径段、token 全部掩掉，只剩结构与 urlFingerprint；原始链接只在插件内部用于抓取与写 profiles.yaml。',
 ].join(' ');
 
 function framer() {
@@ -58,7 +61,8 @@ async function handleMessage(msg, { tools, callTool, log = () => {} }) {
       try {
         envelope = await callTool(name, (params && params.arguments) || {});
       } catch (e) {
-        log(`tools/call ${name} 内部异常: ${e && e.stack ? e.stack : e}`);
+        // 异常栈里可能带着调用方传进来的订阅链接，而这条 log 是落盘到 mcp.log 的
+        log(redactText(`tools/call ${name} 内部异常: ${e && e.stack ? e.stack : e}`));
         return err(id, -32603, '工具执行内部异常，详情见插件日志');
       }
       return {

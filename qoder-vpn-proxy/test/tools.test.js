@@ -196,6 +196,47 @@ test('输出全过脱敏：订阅 token 与节点地址不出现', async () => {
   assert.doesNotMatch(JSON.stringify(diag), /SECRET/);
 });
 
+test('输出面审计：真订阅仓库下三条工具路径都不带订阅主机名与路径段', async () => {
+  const dir = path.join(os.tmpdir(), `qvp-mask-${process.pid}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const configDir = path.join(dir, 'cvr');
+  fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, 'fixtures', 'cvr-profiles.yaml'), path.join(configDir, 'profiles.yaml'));
+  const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: path.join(dir, 'data') }));
+  const repo = new SubscriptionRepo({ configDir, dirs, fetchImpl: async () => ({ format: 'yaml', yaml: 'proxies: []\n', nodes: 2, bytes: 10, name: '沙盒', userInfo: null }) });
+  const deps = {
+    getRuntime: async () => ({ ...RUNTIME, configDir }),
+    // 核心没跑也要走完订阅分支：状态工具不该因为通道不可达就少一层脱敏
+    getClient: async () => { throw new ApiError('channel_unavailable', '核心未运行', '先 proxy_core_start'); },
+    getRepo: async () => repo,
+    getCvr: async () => null,
+    getToolConfig: async () => ({ status: async () => ({ verdict: 'clean', npmrc: { exists: false, managed: false, proxyLines: [] }, git: { managed: [], mismatch: false, otherHttpKeys: [] } }), apply: async () => ({}), revert: async () => ({}) }),
+    getDiagnoseDeps: () => ({}),
+    log: () => {},
+  };
+  const status = await callTool('proxy_status', {}, deps);
+  const subs = await callTool('proxy_subscriptions', {}, deps);
+  const added = await callTool('proxy_subscription_add', { url: 'https://panel.example.invalid/Zx9QwErTyUiOpAsDfGhJkL?token=0123456789abcdef0123456789abcdef', name: '掩码测试' }, deps);
+  const badUid = await callTool('proxy_subscription_update', { uid: 'DOESNOTEXIST' }, deps);
+  assert.equal(status.ok, true);
+  assert.equal(added.ok, true, JSON.stringify(added));
+  assert.equal(badUid.ok, false, '错误路径也在审计范围内');
+
+  const merged = JSON.stringify([status, subs, added, badUid]);
+  for (const leak of ['panel.example.invalid', 'Zx9QwErTyUiOpAsDfGhJkL', 'SUBPATH', 'TOKEN_PLACEHOLDER', '0123456789abcdef']) {
+    assert.ok(!merged.includes(leak), `工具输出里出现了 ${leak}`);
+  }
+  assert.equal(status.data.subscription.current.url, 'https://<masked-host>/<masked-path>?<masked-query>');
+  assert.match(status.data.subscription.current.urlFingerprint, /^[0-9a-f]{10}$/);
+  assert.equal(subs.data[0].url, 'https://<masked-host>/<masked-path>?<masked-query>');
+
+  // 原链接必须还在磁盘上：CVR 自己要用它抓取，脱敏只做在输出面
+  const raw = fs.readFileSync(path.join(configDir, 'profiles.yaml'), 'utf8');
+  assert.ok(raw.includes('panel.example.invalid/SUBPATH'), '注册表里仍是原链接');
+  assert.ok(raw.includes('Zx9QwErTyUiOpAsDfGhJkL'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', async () => {
   const fake = await startFake({ pipeName: 'qvp-t15-e2e', port: 0, secret: 'set-your-secret' });
   const dir = path.join(os.tmpdir(), `qvp-t15-${process.pid}`);

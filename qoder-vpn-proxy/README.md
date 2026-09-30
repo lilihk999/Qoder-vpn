@@ -18,7 +18,7 @@
 - **不开 TUN、不写注册表、不装驱动**
 - 因此**浏览器、游戏、其他终端的行为不变**。只有 agent 显式带上代理前缀的命令，或 `proxy_toolconfig apply` 之后的 npm/git，才走代理。
 - 只连 `127.0.0.1` 和本机命名管道 `\\.\pipe\verge-mihomo`，不出网抓取除订阅地址以外的地方。
-- 订阅 URL 含 token。**所有**工具输出、错误与日志里 token 恒为 `token=<redacted>`；`proxy_nodes` 只回节点名，不回 `server` / `port` / `password` / `uuid` / `sni`。
+- 订阅 URL **整条都是凭据**（不止 token）：主机名与路径段能定位到"哪家机场的哪条链接"，且可直接复用发起请求。**所有**工具输出、错误与日志里它们一律掩成 `https://<masked-host>/<masked-path>?<masked-query>`，另给一个 `urlFingerprint`（sha256(host+path) 前 10 位，换 token 不变）用来判断"两次看到的是不是同一条"。原始链接只留在 CVR 自己的 `profiles.yaml` 里，由 CVR 抓取使用。`proxy_nodes` 只回节点名，不回 `server` / `port` / `password` / `uuid` / `sni`。
 
 ## 17 个工具
 
@@ -33,7 +33,7 @@
 | `proxy_test` | 对节点跑真实 `/delay` 测速，串行执行，按延迟升序返回，坏节点标 `ok:false` 与原因 |
 | `proxy_env` | 给内联前缀或 `export` / npm / git / pip 片段，端口实时解析（不是写死的 7897） |
 | `proxy_toolconfig` | `apply` / `revert` / `status`：把代理写进 `~/.npmrc` 的托管块与 git 的 `http.https://<host>/.proxy`（只针对 GitHub 域名，不动全局 `http.proxy`） |
-| `proxy_subscriptions` | 列订阅：名称、脱敏 url、是否激活、节点数、流量余量、到期日、最后更新时间 |
+| `proxy_subscriptions` | 列订阅：名称、掩码 url + `urlFingerprint`、是否激活、节点数、流量余量、到期日、最后更新时间 |
 | `proxy_subscription_add` | 加一条订阅（Clash 家族 UA 抓取，校验返回必须是 YAML/base64 节点而非 HTML 登录页；写后立即重读校验，不一致回滚） |
 | `proxy_subscription_edit` | 改订阅：换 url（token 轮换 / 换域名）、改名、备注、自动更新策略。**自定义名称在更新后保留** |
 | `proxy_subscription_update` | 重新抓取刷新：传 `uid` 更单条，`all=true` 批量 |

@@ -5,6 +5,8 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const store = require('../server/store');
+const { makeLogger } = require('../server/index');
 
 const ENTRY = path.join(__dirname, '..', 'server', 'index.js');
 
@@ -87,4 +89,24 @@ test('每一行 stdout 都能独立解析，说明日志没有混进协议通道
     assert.match(line, /^\{.*\}$/);
     JSON.parse(line);
   }
+});
+
+test('落盘日志这一行也先过脱敏：订阅链接不进 mcp.log', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-logmask-'));
+  const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: path.join(root, 'data') }));
+  const log = makeLogger(dirs);
+  // 同一行也会写 stderr（真进程里是给运维看的）；这里只验落盘那份，别让测试输出多一行噪音
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = () => true;
+  try {
+    log('tools/call proxy_subscription_add 内部异常: Error: 抓取 https://panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER 失败');
+    // 等流真正落盘再读：close(cb) 在写完后才回调，否则这条断言会在缓冲未冲时偶然通过
+    await new Promise((r) => log.close(r));
+  } finally {
+    process.stderr.write = realWrite;
+  }
+  const text = fs.readFileSync(path.join(dirs.logs, 'mcp.log'), 'utf8');
+  assert.doesNotMatch(text, /panel\.example\.invalid|SUBPATH|TOKEN_PLACEHOLDER/, 'mcp.log 会留在磁盘上，比会话更持久');
+  assert.match(text, /<masked-host>/, '抹过要留可见痕迹，否则只当日志坏了');
+  fs.rmSync(root, { recursive: true, force: true });
 });

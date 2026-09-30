@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const store = require('./store');
 const P = require('./profilesYaml');
 const { ApiError } = require('./envelope');
-const { redactUrl } = require('./redact');
+const { maskSubscriptionUrl, urlFingerprint } = require('./redact');
 const defaultFetch = require('./subscription').fetchSubscription;
 
 const UID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -60,8 +60,10 @@ class SubscriptionRepo {
     return {
       uid: item.uid,
       name: item.name || meta.name || item.uid,
-      url: item.url ? redactUrl(item.url) : null,
-      urlPathOnly: item.url ? item.url.replace(/[?#].*$/, '') : null,
+      // url 只给结构、指纹给身份：主机名与路径段本身就能定位到"哪家机场的哪条链接"，
+      // 且可直接复用发起请求，所以和 token 同级处理。原链接只留在 profiles.yaml 里给 CVR 用。
+      url: item.url ? maskSubscriptionUrl(item.url) : null,
+      urlFingerprint: item.url ? urlFingerprint(item.url) : null,
       file: item.file,
       type: item.type,
       active: item.uid === currentUid,
@@ -90,8 +92,8 @@ class SubscriptionRepo {
     const items = this.items();
     const item = items.find((i) => i.uid === uid);
     if (item) return item;
-    // hint 用 uid(名字) 而不是 uid(脱敏 url)：用户认的是名字
-    const known = items.filter((i) => i.type === 'remote').map((i) => `${i.uid}(${i.name || redactUrl(i.url || '')})`).join(' / ');
+    // hint 用 uid(名字) 而不是 uid(订阅地址)：用户认的是名字，地址一出口就是凭据
+    const known = items.filter((i) => i.type === 'remote').map((i) => `${i.uid}(${i.name || '未命名'})`).join(' / ');
     throw new ApiError('subscription_not_found', `清单里没有 uid ${uid}`, `现有订阅：${known || '（空）'}`);
   }
 
