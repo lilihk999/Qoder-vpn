@@ -47,12 +47,18 @@ function makeHandlers(state) {
       const all = renderProxies(state);
       if (method === 'GET') return all[g] ? { status: 200, json: all[g] } : { status: 404, json: { message: 'proxy not found' } };
       if (method === 'PUT') {
-        if (!state.proxies[g]) return { status: 404, json: { message: 'proxy group not found' } };
-        const t = JSON.parse(body).target;
+        const spec = body ? JSON.parse(body) : {};
+        const t = spec.name || spec.target;
+        if (!g || !state.proxies[g]) return { status: 404, json: { message: 'proxy group not found' } };
         if (!state.proxies[g].all.includes(t)) return { status: 503, json: { message: 'bad target' } };
         state.proxies[g].now = t;
         return { status: 204 };
       }
+    }
+    if (p === '/configs/reload' && method === 'POST') { state.reloadCount += 1; return { status: 204 }; }
+    if (p === '/connections' && method === 'DELETE') { state.connections = []; return { status: 204 }; }
+    if (p === '/connections' && method === 'GET') {
+      return { status: 200, json: { total: 0, uplink: 0, downlink: 0, connections: state.connections } };
     }
     if (/^\/profiles\/[^/]+\/update$/.test(p) && method === 'POST') {
       return { status: 200, json: { name: p.split('/')[2], updated: true, proxies: renderProxies(state) } };
@@ -63,7 +69,7 @@ function makeHandlers(state) {
 
 async function startFake({ pipeName, port = 0, secret = 'set-your-secret', mixedPort = 7897, tcpEnabled = false } = {}) {
   const fullPipe = `\\\\.\\pipe\\${pipeName}`;
-  const state = { secret, mode: 'rule', mixedPort, tunEnabled: false, tcpEnabled, controllerPort: port, proxies: JSON.parse(JSON.stringify(PROXIES)), hits: [] };
+  const state = { secret, mode: 'rule', mixedPort, tunEnabled: false, tcpEnabled, controllerPort: port, connections: [], reloadCount: 0, proxies: JSON.parse(JSON.stringify(PROXIES)), hits: [] };
   const handler = makeHandlers(state);
 
   const dispatch = (req, res) => {
