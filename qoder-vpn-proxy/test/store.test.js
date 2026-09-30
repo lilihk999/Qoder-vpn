@@ -95,3 +95,56 @@ test('listBackupsIn 按落盘时间排，latestBackupIn 取到真正最新的那
   assert.equal(S.latestBackupIn(bd, 'profiles.yaml'), path.join(bd, dashed));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('pruneBackupsIn 按份数与天数淘汰，但每个名字永远至少留最新一份', () => {
+  const dir = tmp('prune1');
+  const bd = path.join(dir, 'backups');
+  fs.mkdirSync(bd, { recursive: true });
+  const DAY = 86400000;
+  const now = Date.UTC(2026, 8, 30, 12);
+  const touch = (name, ageDays) => {
+    const f = path.join(bd, name);
+    fs.writeFileSync(f, 'x');
+    const t = (now - ageDays * DAY) / 1000;
+    fs.utimesSync(f, t, t);
+  };
+  touch('verge.yaml.20260927-000000-001.bak', 40); // 第 3 新 -> 超份数
+  touch('verge.yaml.20260929-000000-001.bak', 20); // 第 2 新 -> 份数内但超龄
+  touch('verge.yaml.20260930-000000-001.bak', 1); // 最新 -> 永远留
+  touch('profiles.yaml.20260901-000000-001.bak', 100); // 该名字唯一一份 -> 超龄也必须留
+  const r = S.pruneBackupsIn(bd, { keepPerName: 2, olderThanDays: 14, now });
+  assert.deepEqual(r.deleted.map((d) => d.file), [
+    'verge.yaml.20260927-000000-001.bak',
+    'verge.yaml.20260929-000000-001.bak',
+  ]);
+  assert.deepEqual(r.deleted.map((d) => d.reason), ['count', 'age'], '原因要分清，用户才知道为什么少了一份');
+  assert.ok(fs.existsSync(path.join(bd, 'verge.yaml.20260930-000000-001.bak')), '最新一份不许被删');
+  assert.ok(fs.existsSync(path.join(bd, 'profiles.yaml.20260901-000000-001.bak')), '只剩一份时哪怕超龄也留');
+  assert.deepEqual(r.kept.sort(), ['profiles.yaml.20260901-000000-001.bak', 'verge.yaml.20260930-000000-001.bak']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('pruneBackupsIn dryRun 只报告不删，且绝不碰非备份文件', () => {
+  const dir = tmp('prune2');
+  const bd = path.join(dir, 'backups');
+  fs.mkdirSync(bd, { recursive: true });
+  const now = Date.UTC(2026, 8, 30, 12);
+  for (const n of ['verge.yaml.20260901-000000-001.bak', 'verge.yaml.20260902-000000-001.bak']) {
+    const f = path.join(bd, n);
+    fs.writeFileSync(f, 'x');
+    const t = (now - 40 * 86400000) / 1000;
+    fs.utimesSync(f, t, t);
+  }
+  fs.writeFileSync(path.join(bd, 'subscriptions.json'), '{"keep":true}');
+  fs.writeFileSync(path.join(bd, 'notes.md'), 'keep');
+  const dry = S.pruneBackupsIn(bd, { keepPerName: 1, olderThanDays: 7, now, dryRun: true });
+  assert.equal(dry.deleted.length, 1);
+  assert.equal(dry.scanned, 2, '只统计备份文件');
+  assert.ok(fs.existsSync(path.join(bd, 'verge.yaml.20260901-000000-001.bak')), 'dryRun 不能真删');
+  const real = S.pruneBackupsIn(bd, { keepPerName: 1, olderThanDays: 7, now });
+  assert.equal(real.deleted.length, 1);
+  assert.ok(!fs.existsSync(path.join(bd, 'verge.yaml.20260901-000000-001.bak')));
+  assert.ok(fs.existsSync(path.join(bd, 'subscriptions.json')), '非备份文件一律不碰');
+  assert.ok(fs.existsSync(path.join(bd, 'notes.md')));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

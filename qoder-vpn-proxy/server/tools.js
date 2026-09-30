@@ -4,6 +4,7 @@ const { redactText, redactUrl } = require('./redact');
 const { buildProxyEnv, inlinePrefix, GIT_PROXY_HOSTS } = require('./env');
 const { probeTcp } = require('./discovery');
 const { runDiagnose, DEFAULT_TARGETS } = require('./diagnose');
+const { pruneBackupsIn } = require('./store');
 
 const MODES = ['rule', 'global', 'direct'];
 const SCOPES = ['session', 'global'];
@@ -393,10 +394,25 @@ function buildTools(deps) {
     },
     {
       name: 'proxy_restore_config',
-      description: '列出插件对 verge.yaml / profiles.yaml 做过的全部带时间戳备份并还原。npm 与 git 的用户级配置走 ToolConfig 的托管块撤销（name=npm|git），因为它们的备份不在 CVR 配置目录里。中途放弃或想把改动全部撤销时用它；CVR 配置还原后与备份逐字节一致。',
-      inputSchema: obj({ name: str(CVR_RESTORE_TARGETS, '只还原指定项：verge.yaml / profiles.yaml 走 CVR 备份；npm / git 走托管块移除。省略则还原两个 CVR 配置文件'), listOnly: bool('只列备份不还原') }),
+      description: '列出插件对 verge.yaml / profiles.yaml 做过的全部带时间戳备份并还原。npm 与 git 的用户级配置走 ToolConfig 的托管块撤销（name=npm|git），因为它们的备份不在 CVR 配置目录里。中途放弃或想把改动全部撤销时用它；CVR 配置还原后与备份逐字节一致。prune=true 时不还原，只按保留期清理备份目录（profiles.yaml 的备份里带着订阅 token，不能无限堆在磁盘上）。',
+      inputSchema: obj({
+        name: str(CVR_RESTORE_TARGETS, '只还原指定项：verge.yaml / profiles.yaml 走 CVR 备份；npm / git 走托管块移除。省略则还原两个 CVR 配置文件'),
+        listOnly: bool('只列备份不还原'),
+        prune: bool('清理备份目录而不是还原它；与 name / listOnly 互斥'),
+        keepPerName: numSchema('每个配置文件最多保留几份备份，默认 5；最新的份永远保留'),
+        olderThanDays: numSchema('超过这么多天的备份删除，默认 14'),
+        dryRun: bool('prune 时只报告将要删什么，不真删'),
+      }),
       handler: async (a = {}) => {
         if (a.name !== undefined) assertEnum(a.name, CVR_RESTORE_TARGETS, 'name');
+        if (a.prune) {
+          if (a.name !== undefined || a.listOnly) throw bad('prune 与还原参数不能同时给', 'prune 只清理备份文件；要还原就别带 prune');
+          // 先校验参数再碰磁盘：keepPerName:0 若走到删除，等于把整组备份名册读完才发现命令是错的
+          const keepPerName = numOr(a.keepPerName, 5, 'keepPerName');
+          const olderThanDays = numOr(a.olderThanDays, 14, 'olderThanDays');
+          // 清理不依赖 CVR 在跑，也不依赖 rt.configDir —— 带着 token 的旧备份恰恰是核心停着的时候最该清
+          return ok(pruneBackupsIn(deps.backupDir, { keepPerName, olderThanDays, dryRun: !!a.dryRun }));
+        }
         const cvr = await deps.getCvr();
         if (!cvr) throw new ApiError('not_installed', '没有可还原的 CVR 配置目录', '');
         const backups = cvr.listBackups();

@@ -67,6 +67,7 @@ function buildDeps(dirs, log) {
     new ToolConfig({ npmrcPath: path.join(os.homedir(), '.npmrc'), backupDir: dirs.backups });
 
   return {
+    backupDir: dirs.backups,
     getRuntime,
     getClient,
     getRepo,

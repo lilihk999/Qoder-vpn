@@ -3367,14 +3367,63 @@ function moveToTrash(d, absPath) {
 
 function listTrash(d) { try { return fs.readdirSync(d.trash); } catch { return []; } }
 
-/** 备份目录里的文件名，按时间顺序（stamp 前缀可字典序排） */
+/** 备份目录里的文件名，按修改时间升序（老的在前）。名字里混着两种 stamp 格式，字典序会挑到过期那份 */
 function listBackupsIn(dirPath) {
-  try { return fs.readdirSync(dirPath).filter((f) => /\.[\d-]+\.bak$/.test(f)).sort(); } catch { return []; }
+  let files;
+  try { files = fs.readdirSync(dirPath).filter((f) => /\.[\d-]+\.bak$/.test(f)); } catch { return []; }
+  const mtime = (f) => { try { return fs.statSync(path.join(dirPath, f)).mtimeMs; } catch { return 0; } };
+  return files.sort((a, b) => (mtime(a) - mtime(b)) || (a < b ? -1 : a > b ? 1 : 0));
 }
 
 function latestBackupIn(dirPath, name) {
   const hits = listBackupsIn(dirPath).filter((f) => f.startsWith(`${name}.`));
   return hits.length ? path.join(dirPath, hits[hits.length - 1]) : null;
+}
+
+/**
+ * 备份保留期清理。按"逻辑文件名"（verge.yaml / profiles.yaml / .npmrc）分组，各自淘汰老备份：
+ * 名次超出 keepPerName 的删（reason:count），超过 olderThanDays 的删（reason:age）。
+ * 每组至少留最新一份 —— 全删干净等于让 proxy_restore_config 失去还原依据，
+ * 而 profiles.yaml 的备份里带着订阅 token，留着才是问题：所以两条规则同时生效。
+ */
+function pruneBackupsIn(dirPath, { keepPerName = 5, olderThanDays = 14, now = Date.now(), dryRun = false } = {}) {
+  const all = listBackupsIn(dirPath); // 升序：老的在前
+  const groups = new Map();
+  for (const f of all) {
+    const name = (/^(.+)\.[\d-]+\.bak$/.exec(f) || [, f])[1];
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(f);
+  }
+  const DAY = 86400000;
+  const deleted = [];
+  const failed = [];
+  const kept = [];
+  for (const files of groups.values()) {
+    const last = files.length - 1;
+    files.forEach((f, i) => {
+      const rank = last - i; // 0 = 该组最新
+      let reason = null;
+      if (rank > 0) {
+        if (rank >= keepPerName) reason = 'count';
+        else {
+          let age = 0;
+          try { age = now - fs.statSync(path.join(dirPath, f)).mtimeMs; } catch { age = 0; }
+          if (age > olderThanDays * DAY) reason = 'age';
+        }
+      }
+      if (reason) {
+        const entry = { file: f, reason };
+        if (dryRun) {
+          deleted.push(entry);
+        } else {
+          try { fs.unlinkSync(path.join(dirPath, f)); deleted.push(entry); }
+          // Windows 上 CVR 可能正占着文件；删不掉就如实报 failed，不能假装已清理
+          catch (e) { failed.push({ file: f, reason, error: e.code || e.message }); }
+        }
+      } else kept.push(f);
+    });
+  }
+  return { deleted, failed, kept, scanned: all.length, dryRun: !!dryRun };
 }
 
 function restoreFromTrash(d, name, dest) {
@@ -3386,7 +3435,7 @@ function restoreFromTrash(d, name, dest) {
 
 module.exports = {
   dataDir, dirs, ensure, readJson, writeJsonAtomic, stamp,
-  moveToTrash, listTrash, listBackupsIn, latestBackupIn, restoreFromTrash,
+  moveToTrash, listTrash, listBackupsIn, latestBackupIn, pruneBackupsIn, restoreFromTrash,
 };
 ```
 
@@ -5683,10 +5732,25 @@ function buildTools(deps) {
     },
     {
       name: 'proxy_restore_config',
-      description: '列出插件对 verge.yaml / profiles.yaml 做过的全部带时间戳备份并还原。npm 与 git 的用户级配置走 ToolConfig 的托管块撤销（name=npm|git），因为它们的备份不在 CVR 配置目录里。中途放弃或想把改动全部撤销时用它；CVR 配置还原后与备份逐字节一致。',
-      inputSchema: obj({ name: str(CVR_RESTORE_TARGETS, '只还原指定项：verge.yaml / profiles.yaml 走 CVR 备份；npm / git 走托管块移除。省略则还原两个 CVR 配置文件'), listOnly: bool('只列备份不还原') }),
+      description: '列出插件对 verge.yaml / profiles.yaml 做过的全部带时间戳备份并还原。npm 与 git 的用户级配置走 ToolConfig 的托管块撤销（name=npm|git），因为它们的备份不在 CVR 配置目录里。中途放弃或想把改动全部撤销时用它；CVR 配置还原后与备份逐字节一致。prune=true 时不还原，只按保留期清理备份目录（profiles.yaml 的备份里带着订阅 token，不能无限堆在磁盘上）。',
+      inputSchema: obj({
+        name: str(CVR_RESTORE_TARGETS, '只还原指定项：verge.yaml / profiles.yaml 走 CVR 备份；npm / git 走托管块移除。省略则还原两个 CVR 配置文件'),
+        listOnly: bool('只列备份不还原'),
+        prune: bool('清理备份目录而不是还原它；与 name / listOnly 互斥'),
+        keepPerName: numSchema('每个配置文件最多保留几份备份，默认 5；最新的份永远保留'),
+        olderThanDays: numSchema('超过这么多天的备份删除，默认 14'),
+        dryRun: bool('prune 时只报告将要删什么，不真删'),
+      }),
       handler: async (a = {}) => {
         if (a.name !== undefined) assertEnum(a.name, CVR_RESTORE_TARGETS, 'name');
+        if (a.prune) {
+          if (a.name !== undefined || a.listOnly) throw bad('prune 与还原参数不能同时给', 'prune 只清理备份文件；要还原就别带 prune');
+          // 先校验参数再碰磁盘：keepPerName:0 若走到删除，等于把整组备份名册读完才发现命令是错的
+          const keepPerName = numOr(a.keepPerName, 5, 'keepPerName');
+          const olderThanDays = numOr(a.olderThanDays, 14, 'olderThanDays');
+          // 清理不依赖 CVR 在跑，也不依赖 rt.configDir —— 带着 token 的旧备份恰恰是核心停着的时候最该清
+          return ok(pruneBackupsIn(deps.backupDir, { keepPerName, olderThanDays, dryRun: !!a.dryRun }));
+        }
         const cvr = await deps.getCvr();
         if (!cvr) throw new ApiError('not_installed', '没有可还原的 CVR 配置目录', '');
         const backups = cvr.listBackups();
@@ -5824,6 +5888,7 @@ function buildDeps(dirs, log) {
     new ToolConfig({ npmrcPath: path.join(os.homedir(), '.npmrc'), backupDir: dirs.backups });
 
   return {
+    backupDir: dirs.backups,
     getRuntime,
     getClient,
     getRepo,
@@ -6622,4 +6687,28 @@ Task 14 (需 4+8) ────────────────────�
 ```
 
 文字版：`3 → {4,5,6} → 7 → {8,9} → 10 → 11 → 12 → {13,14} → 15 → 16 → 17`。Task 1 与 Task 2 是探针，可与 Task 3–6 并行；Task 1 必须在 Task 7 之前出结论，Task 2 必须在 Task 16 之前出结论。
+
+---
+
+### Task 18（验收后追加）: `backups/` 保留期清理
+
+用户在 Task 17 收尾时提的第一项：**① backups/ 加保留期清理**。触发点是验收 7 自己写下的遗留问题——`profiles.yaml.*.bak` 是未脱敏的原始字节，里面带着订阅 token，而目录没有保留期策略。
+
+**Files:**
+- Modify: `qoder-vpn-proxy/server/store.js`（新增 `pruneBackupsIn`）
+- Modify: `qoder-vpn-proxy/server/tools.js`（`proxy_restore_config` 加 `prune` 分支）
+- Modify: `qoder-vpn-proxy/server/index.js`（deps 暴露 `backupDir`）
+- Modify: `qoder-vpn-proxy/README.md`、`qoder-vpn-proxy/skills/vpn-proxy/SKILL.md`
+- Test: `qoder-vpn-proxy/test/store.test.js`（+2）、`qoder-vpn-proxy/test/tools.test.js`（+3）
+
+**Interfaces:**
+- Produces: `store.pruneBackupsIn(dirPath, { keepPerName = 5, olderThanDays = 14, now, dryRun = false })` → `{ deleted:[{file,reason}], failed:[{file,reason,error}], kept:[name], scanned, dryRun }`
+- Consumes: `listBackupsIn(dir)` 的升序语义（mtime）；`proxy_restore_config` 的 `deps.backupDir`
+
+- [x] **Step 1: store 层失败测试**——同名的多份备份按份数与天数各自淘汰，但**每个逻辑文件名永远至少留最新一份**（全删等于让 `proxy_restore_config` 失去还原依据）；`dryRun` 只报告不删，且非 `.bak` 文件（`subscriptions.json`、`notes.md`）绝不进扫描集。
+- [x] **Step 2: 实现 `pruneBackupsIn`**，删除失败（Windows 上 CVR 正占着文件）如实进 `failed`，不假装已清理。`node --test --test-force-exit test/store.test.js` → 11/11。
+- [x] **Step 3: tools 层失败测试**——`prune` 与 `name`/`listOnly` 互斥报 `malformed_config`；`keepPerName:0` 的错误消息里必须带参数名；**`getCvr()` 返回 null（CVR 未安装/核心没跑）时 prune 仍要成功**，因为带 token 的旧备份恰恰是关着核心时最该清的东西。
+- [x] **Step 4: 接线**——`proxy_restore_config` 的 prune 分支放在 `await deps.getCvr()` **之前**，参数校验放在碰磁盘之前；`index.js` 的 deps 加 `backupDir: dirs.backups`。全套 `node --test --test-force-exit` → **159 tests / 0 fail**（Task 17 收尾时 154，本任务净增 5）。
+
+**已知边界（不是 bug，是取舍）**：清理**不会自动触发**。`cvr-config.js` 与 `toolconfig.js` 的备份写入走的是注入的 `this.fs`（测试用内存假件），而 `pruneBackupsIn` 用真 `fs.unlinkSync`；把 prune 塞进备份路径会让那些假件失效。因此保留期由调用方掌握：SKILL.md 明确写了"每次动过配置的流程结束时跑一次 `prune`"，README 的数据目录表也点明了 token 风险。若日后要做自动清理，正确切入口是给 `CvrConfig`/`ToolConfig` 注入 `prune` 函数而不是直接用 `fs`。
 

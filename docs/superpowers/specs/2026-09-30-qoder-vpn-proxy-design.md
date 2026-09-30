@@ -279,7 +279,7 @@ Transport = {
 
 真机验收记录在 `docs/superpowers/verification/2026-09-30-acceptance.md`；探针细节在 `docs/superpowers/probes/01-named-pipe.md`、`02-hooks.md`。
 
-- ~~Qoder 桌面端自身的模型请求是否读取 WinINET 系统代理~~ → **仍未端到端证明，但设计上不需要**：`proxy_diagnose` 实测 `Qoder 直连 540ms / 经代理 3622ms`，直连更快，所以插件默认就让 Qoder 走直连；全程 `ProxyEnable=0` 时 WinINET 分支根本不被读。**"要不要让 Qoder 的模型请求走代理"是未回答的产品问题**，验证它需要临时打开系统代理（违反本设计前提），必须另行取得用户同意。
+- ~~Qoder 桌面端自身的模型请求是否读取 WinINET 系统代理~~ → **仍未端到端证明，但设计上不需要**：`proxy_diagnose` 实测 `Qoder 直连 540ms / 经代理 3622ms`，直连更快，所以插件默认就让 Qoder 走直连；全程 `ProxyEnable=0` 时 WinINET 分支根本不被读。**"要不要让 Qoder 的模型请求走代理"已由用户在收尾时决定：不要**（③）。这不是性能建议而是设计约束，写进 SKILL.md 的"边界"，任何工具都不得把 `HTTPS_PROXY` 指到本机端口去影响 Qoder 自身；端到端验证需要临时打开系统代理（违反本设计前提），因此不做。
 - ~~命名管道的 mihomo HTTP 支持程度~~ → **完全够用，默认通道即管道**（mihomo v1.19.25，`enable_external_controller:false`）。`GET /version`、`GET /configs`、`GET /proxies`、`PATCH /configs`、`GET /delay`、`PUT /proxies/{name}` 全部可用；TCP 兜底保留但从未需要。两个副作用级发现：真机上 **`PUT /configs` 回 204 却不改状态**（必须 `PATCH`），且 **没有 `POST /configs/reload`（404）** —— 订阅切换后要靠重启核心才加载新节点。
 - ~~`PreToolUse` 是否支持 `updatedInput`~~ → **不支持**。hook stdout 契约只有 `decision`/`reason`/`additionalContext`；二进制里的 `updatedInput` 属 SDK permission-response 通路。按原计划接受"提示 + 工具级持久配置"组合。附带结论：hook 子进程的环境变量随进程消失，**无法**给 Bash 工具注入 `http_proxy`。
 - ~~新订阅链接返回的节点集合与旧 profile 是否一致~~ → **一致**：新条目 15 个业务节点，4 个策略组（GLOBAL 20 / 南山云 17 / 故障转移 15 / 自动选择 15）成员未变；quota 读回 total=74826208722。换链接是纯地址变更，不是套餐变更。
@@ -289,6 +289,6 @@ Transport = {
 仍未验证 / 未闭环：
 
 - `@local` 插件 source 能否被 Qoder 加载、17 个工具在重启后是否可见、SessionStart hook 是否真的只在 CVR 运行时注入 —— 三条都要重启 Qoder 才能看，见验收文档 §验收 4 / §验收 9。
-- 插件的 `backups/profiles.yaml.*` 必然含原始订阅 token（那是 CVR 工作文件的逐字节副本），目前无保留期策略。
+- ~~插件的 `backups/profiles.yaml.*` 必然含原始订阅 token（那是 CVR 工作文件的逐字节副本），目前无保留期策略~~ → **已加保留期清理（计划 Task 18）**：`proxy_restore_config prune=true` 按"每个文件名留 5 份 / 超 14 天删 / 最新一份永远留"清理，`dryRun` 可先看清单。局限：清理**不自动触发**（备份写入层用注入的假 `fs`，prune 用真 `fs.unlinkSync`），所以 SKILL.md 要求每次动过配置的流程结束时跑一次。
 - CVR 自己写入的注册表值 `ProxyServer`/`ProxyOverride`（基线里没有）仍留在机器上；因 `ProxyEnable=0` 而惰性，清除它需要用户同意。
 

@@ -246,3 +246,54 @@ test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', a
   await fake.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('proxy_restore_config prune 走保留期清理，dryRun 一支真不删', async () => {
+  const dir = path.join(os.tmpdir(), `qvp-prune-tools-${process.pid}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const now = Date.UTC(2026, 8, 30, 12);
+  const mk = (n, ageDays) => {
+    const f = path.join(dir, n);
+    fs.writeFileSync(f, 'x');
+    const t = (now - ageDays * 86400000) / 1000;
+    fs.utimesSync(f, t, t);
+  };
+  mk('verge.yaml.20260901-000000-001.bak', 60);
+  mk('verge.yaml.20260920-000000-001.bak', 2);
+  const { deps } = fakeDeps({ backupDir: dir });
+
+  const dry = await callTool('proxy_restore_config', { prune: true, keepPerName: 1, olderThanDays: 3650, dryRun: true }, deps);
+  assert.equal(dry.ok, true, JSON.stringify(dry));
+  assert.deepEqual(dry.data.deleted.map((d) => d.file), ['verge.yaml.20260901-000000-001.bak']);
+  assert.equal(dry.data.dryRun, true);
+  assert.ok(fs.existsSync(path.join(dir, 'verge.yaml.20260901-000000-001.bak')), 'dryRun 说了要删就不能真删');
+
+  const real = await callTool('proxy_restore_config', { prune: true, keepPerName: 1 }, deps);
+  assert.equal(real.data.deleted.length, 1);
+  assert.ok(!fs.existsSync(path.join(dir, 'verge.yaml.20260901-000000-001.bak')), '非 dryRun 必须真删');
+  assert.deepEqual(real.data.kept, ['verge.yaml.20260920-000000-001.bak']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('prune 不依赖 CVR 在跑 —— 清掉带 token 的旧备份正是关着核心时做的事', async () => {
+  const dir = path.join(os.tmpdir(), `qvp-prune-offline-${process.pid}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'profiles.yaml.20260101-000000-001.bak'), 'x');
+  fs.writeFileSync(path.join(dir, 'profiles.yaml.20260920-000000-001.bak'), 'x');
+  const { deps } = fakeDeps({ backupDir: dir, getCvr: async () => null });
+  const env = await callTool('proxy_restore_config', { prune: true, keepPerName: 1 }, deps);
+  assert.equal(env.ok, true, JSON.stringify(env));
+  assert.equal(env.data.deleted.length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('prune 与还原互斥，keepPerName 必须是正数', async () => {
+  const { deps } = fakeDeps({ backupDir: '/tmp/nope' });
+  const both = await callTool('proxy_restore_config', { prune: true, name: 'verge.yaml' }, deps);
+  assert.equal(both.ok, false);
+  assert.equal(both.kind, 'malformed_config');
+  const bad = await callTool('proxy_restore_config', { prune: true, keepPerName: 0 }, deps);
+  assert.equal(bad.ok, false);
+  assert.match(bad.message, /keepPerName/);
+});
