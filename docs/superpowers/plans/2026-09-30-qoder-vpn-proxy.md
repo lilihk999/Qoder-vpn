@@ -23,7 +23,8 @@
 - 写 `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\` 下任何文件（`verge.yaml`、`profiles.yaml`）之前，必须先做带时间戳的完整备份；备份失败则中止，不进入半改状态。
 - MCP stdio 服务端的 `process.stdout` 只写 JSON-RPC 帧。日志一律写 `stderr` 或插件数据目录文件，否则会破坏协议。
 - 面向用户的文案（工具 `description`、`hint`、`SKILL.md`、README）用中文。
-- 每个任务结束时 `node --test test/` 必须全绿，然后提交一次 git commit。
+- 每个任务结束时 `node --test` 必须全绿，然后提交一次 git commit。
+- **全量测试一律写成 `node --test`（无参数）或 `node --test test/具体文件.js`，绝不要写 `node --test test/`。** 本机 shell 的 Node 是 v22.23.3，给它一个目录位置参数会被当成"要执行的模块"，直接 `MODULE_NOT_FOUND: ...\test` 而不是递归扫描 —— 这个坑会让整个 `npm run test` 与每个任务的"全量测试"步骤假失败。单文件形式（`test/x.test.js`）不受影响。
 
 ## 文件结构
 
@@ -229,7 +230,7 @@ git add docs/superpowers/probes/02-hooks.md && git commit -m "probe: Qoder hook 
   "private": true,
   "type": "commonjs",
   "description": "识别并使用本机 Clash Verge Rev 代理的 Qoder 插件",
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test" }
 }
 ```
 
@@ -275,7 +276,7 @@ test('redactText 对 undefined 与数字安全', () => {
 
 - [ ] **Step 3: 跑测试确认失败**
 
-Run: `cd qoder-vpn-proxy && node --test test/`
+Run: `cd qoder-vpn-proxy && node --test`
 Expected: FAIL，`Cannot find module '../server/redact'`
 
 - [ ] **Step 4: 实现 redact.js**
@@ -344,7 +345,7 @@ module.exports = { ok, fail, ApiError, ENVELOPE_KINDS, toEnvelope };
 
 - [ ] **Step 6: 跑测试确认通过**
 
-Run: `node --test test/`
+Run: `node --test`
 Expected: PASS（5 个测试）
 
 - [ ] **Step 7: 提交**
@@ -883,7 +884,7 @@ Expected: PASS（3 个测试）。若报 `proxy group not found`，检查 `PROXI
 
 - [ ] **Step 5: 跑全量测试**
 
-Run: `node --test test/`
+Run: `node --test`
 Expected: PASS，Task 3–6 的全部测试绿。
 
 - [ ] **Step 6: 提交**
@@ -1178,7 +1179,7 @@ Expected: PASS（8 个测试）。"TCP 兜底"那条传的是 `controller: {pipe
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/transport.js qoder-vpn-proxy/test/transport.test.js
 git commit -m "feat: transport 抽象(管道优先/TCP 兜底/auth_failed 与 channel_unavailable 分流)"
 ```
@@ -1946,7 +1947,7 @@ Expected: 两个文件都 PASS（fake 3 个 + client 9 个）。Task 6 那条用
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/clash-client.js qoder-vpn-proxy/test
 git commit -m "feat: clash-client mihomo REST 语义层(切换后回读确认/坏节点归 timeout)"
 ```
@@ -2461,7 +2462,7 @@ Expected: PASS（14 个测试）。
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/cvr-config.js qoder-vpn-proxy/test/cvr-config.test.js
 git commit -m "feat: cvr-config 备份/压制系统代理/启停 CVR(失败即回滚，不留半改)"
 ```
@@ -2916,7 +2917,7 @@ for (const [n,f] of [['setCurrent',()=>P.setCurrent(raw,'Merge')],['append',()=>
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/profilesYaml.js qoder-vpn-proxy/test/profilesYaml.test.js
 git commit -m "feat: profilesYaml 外科式编辑(round-trip 恒等为主验收)"
 ```
@@ -3588,7 +3589,7 @@ Expected: PASS（13 个测试）。同时删掉 Step 5 里那个错误的 `readP
 - [ ] **Step 7: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/store.js qoder-vpn-proxy/server/subscriptions.js qoder-vpn-proxy/test
 git commit -m "feat: store 数据目录与订阅仓库(CRUD/写后校验/desync 回滚)"
 ```
@@ -4012,7 +4013,7 @@ Expected: PASS（10 个测试）。`status 三种状态` 那条如果 `foreign` 
 - [ ] **Step 5: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/toolconfig.js qoder-vpn-proxy/test/toolconfig.test.js
 git commit -m "feat: toolconfig npmrc 托管块与 git 域名代理的 apply/revert/status"
 ```
@@ -4329,7 +4330,7 @@ Expected: 与 spec §2 基线一致 —— GitHub 两行 FAIL（超时）、npm/
 - [ ] **Step 6: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server/diagnose.js qoder-vpn-proxy/test/diagnose.test.js
 git commit -m "feat: diagnose 直连与经代理对比探测(含 --noproxy 隔离环境变量)"
 ```
@@ -5340,7 +5341,7 @@ Expected: `帧数 4`、`工具数 17`、`proxy_status ok= true installed= true`�
 - [ ] **Step 9: 全量测试与提交**
 
 ```bash
-node --test test/
+node --test
 git add qoder-vpn-proxy/server qoder-vpn-proxy/test
 git commit -m "feat: MCP stdio 服务端与 17 个工具接线"
 ```
