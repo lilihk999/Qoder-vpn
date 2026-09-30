@@ -30,7 +30,7 @@ verdict: 代理对 2 项目前是必需的
 **结论**：达成。GitHub 两行确实从直连失败翻成经代理成功，且这一轮系统代理读回来是 0。
 
 **遗留问题**：
-1. 第一版输出里 `direct.totalMs` 是 `null`（上面这段是修复后的重跑）。原因是 curl 8.17.0 在连接失败时 `%{remote_ip}` 打的是空串，`parseCurlOut` 的四段正则整行匹配失败，把耗时一起丢了。已按 TDD 修（commit `5f8ced4`），并补了两条测试锁住"失败行也要有耗时"。
+1. 第一版输出里 `direct.totalMs` 是 `null`（上面这段是修复后的重跑）。原因是 curl 8.17.0 在连接失败时 `%{remote_ip}` 打的是空串，`parseCurlOut` 的四段正则整行匹配失败，把耗时一起丢了。已按 TDD 修（commit `572c599`），并补了两条测试锁住"失败行也要有耗时"。
 2. `npm registry 经代理反而失败`是**机场侧**（该节点或分流规则），不是插件问题：同一轮里 npm 直连 4505ms 是通的。
 3. `verdict` 只看"直连不通"的项，所以 npm 那行 FAIL 没进 verdict。这是设计（回答"该不该走代理"），但读表的人容易误以为 npm 没问题，README 里已按"逐行 conclusion 优先于 verdict"来讲。
 
@@ -235,7 +235,7 @@ SEitsxVMpF0c | 南山云(新) | active=true | nodes=15 | remark=2026-09-30 换�
 **结论**：达成（带一条限定）。自定义名称与备注在 update 后保留、`activate` 写入的 `current` 落盘并被 CVR 接受、激活项删除被拦截、内容文件进 `.trash` 可放回 —— 都拿到了真机返回体。
 
 **遗留问题（重要，实测推翻了原设计假设）**：
-1. `activate` 第一次返回 `{"ok":false,"kind":"channel_unavailable","message":"POST /configs/reload -> HTTP 404 404 page not found"}` —— **mihomo v1.19.25 根本没有 reload 端点**（CVR 走 GUI 侧的 profile 切换，不走这个 REST 路径）。注册表写入其实已经成功。已按 TDD 改成如实上报（commit `c46e474`）：`reloaded` / `needsRestart` / `note` 三个字段明说"profiles.yaml 已改，需 `proxy_core_stop` + `proxy_core_start`（或 GUI 点一下该订阅）才真正加载新节点"。
+1. `activate` 第一次返回 `{"ok":false,"kind":"channel_unavailable","message":"POST /configs/reload -> HTTP 404 404 page not found"}` —— **mihomo v1.19.25 根本没有 reload 端点**（CVR 走 GUI 侧的 profile 切换，不走这个 REST 路径）。注册表写入其实已经成功。已按 TDD 改成如实上报（commit `ba63223`）：`reloaded` / `needsRestart` / `note` 三个字段明说"profiles.yaml 已改，需 `proxy_core_stop` + `proxy_core_start`（或 GUI 点一下该订阅）才真正加载新节点"。
 2. 没观察到 `profile_registry_desync` —— CVR 运行期确实会重写 `profiles.yaml`，但插件的写后重读校验都通过了，所以计划里预设的"先停核心再操作订阅"这条备用路径没有被触发。
 3. 操作过程中我自己犯过一次错：拿**未激活**的 uid 去测删除保护，误删了 `lkYFauvJwQeP`。已重新添加（新 uid `SEitsxVMpF0c`）并正确验证了 `subscription_active_protected`。这条留在文档里，作为"删除保护只对 current 生效"的事实记录。
 
@@ -328,7 +328,7 @@ ProxyEnable = 0x0
 - `verge.yaml`（插件唯一为"压制系统代理"而改的会话级文件）：当前 = 最新备份 = 基线，**逐字节一致**，还原链路（含 `proxy_core_stop` 的自动回滚）成立。
 - `profiles.yaml`：**故意**不等于基线 —— 它承载的是用户主动要求的订阅切换（验收 5）。把"改动"和"泄漏"分开看：切换前的原始字节就在 `profiles.yaml.20260930-123930-488-001.bak` 里，已验证与基线逐字节一致，随时可 `proxy_restore_config` 回滚。
 
-**遗留问题**：早期版本的 `listBackups` 把备份按**文件名字典序**排，而目录里混着两种时间戳格式（`20260930-123930-488-001` 带连字符、`20260930130959726-001` 不带），于是"最新一份"会挑到过期那份，`restore` 会退回更老的状态。已按 TDD 改成按 mtime 排（commit `1cc84bc`），并用 `utimesSync` 钉住 mtime 的测试复现了原 bug。同类地，`stop()` 原本连 `profiles.yaml` 一起回滚，会撤销用户刚切的订阅 —— 已收窄到 `SESSION_RESTORE_NAMES = ['verge.yaml']`，上面那条 `stop` 返回体的 `restoredList` 只有一项 `verge.yaml` 就是它的直接证据。
+**遗留问题**：早期版本的 `listBackups` 把备份按**文件名字典序**排，而目录里混着两种时间戳格式（`20260930-123930-488-001` 带连字符、`20260930130959726-001` 不带），于是"最新一份"会挑到过期那份，`restore` 会退回更老的状态。已按 TDD 改成按 mtime 排（commit `54a308b`），并用 `utimesSync` 钉住 mtime 的测试复现了原 bug。同类地，`stop()` 原本连 `profiles.yaml` 一起回滚，会撤销用户刚切的订阅 —— 已收窄到 `SESSION_RESTORE_NAMES = ['verge.yaml']`，上面那条 `stop` 返回体的 `restoredList` 只有一项 `verge.yaml` 就是它的直接证据。
 
 ---
 
@@ -513,6 +513,7 @@ diff -rq server hooks skills + cmp .qoder-plugin/plugin.json → 无差异；
    - **只扫 `.md` 会漏**。`redact.test.js` 的**两个历史版本**里带真 token（tip 上是合成 fixture，所以"tip 干净"这个结论本身没错，但按 tip 判断范围会低估历史）。
    **做法**：先把原历史 `git bundle` 存档并 verify（`Temp/qvp-pre-scrub.bundle`），在**它的克隆**里预演一遍再动真仓库。用 `filter-branch --index-filter` 直接改索引、不做 checkout —— 实测 `--tree-filter` 在这台机器上会把整棵树换成 CRLF（`core.autocrlf=true` 且 master 上没有 `.gitattributes`），而且 `git archive | tar -x` 提取出来的文件每个都"看起来变了"，逐行对比会得出 5761 行全改的假象。替换规则：真 token → 仓库既有的合成 fixture、真路径段 → `SUBPATH`。**6/8 位前缀规则试过就撤**：它命中了文档里 `UID_ALPHABET` 常量的字面量（误伤），而 8/32 位前缀不构成可用凭据，用户已决定保留它们作 grep 锚点。
    **验证**（克隆与真仓库各一遍）：`0 / 36` 提交命中；提交数 36→36；父链同构 `ok=35 root=1 bad=0`；36 对提交之间只有 3 个文件变动（spec ×29、plan ×14、`redact.test.js` ×2）；**分支 tip 的 tree hash 与重写前逐字节相同**（`3e251f0343dded12dbb99a228f140ed6507c228a`），即工作成果没被动过；master tip 只改那两份文档；重写后 `node --test` 165/165。**清不可达对象单跑 `git gc --prune=now` 不够**（克隆里实测残留 20 个旧 blob），要 `git repack -adf --unpack-unreachable=now` + `git prune --expire=now`，对象数 477→361 才归零；之后用**通用模式探测器**（不看清单，只按 `token=<32hex>` 与 16–24 位路径段的形状）扫全部对象 **0 命中**。文档里 15 处旧提交短哈希引用已按映射表换新（`6808775` 那处是配额字节数，不是哈希，属误报）。
-   仍待用户给出：**remote URL 与仓库可见性**（公开/私有）；`gh` 不在 PATH，PR 只能用 API token 或网页手工创建。**在拿到这两项之前不执行任何 push。**
+   用户已给出处置（18:0x）：**仓库可见性 = 公开**、**PR 走"我推送 + 用户在网页手工建"**、**推送认证 = Git Credential Manager 弹窗**（本机 `credential.helper=helper-selector`，无 SSH 密钥、无 `.git-credentials`）、**直连优先，失败再由本插件的 per-host git 代理键走 `127.0.0.1:7897`**。仍然只缺 **remote URL**（不猜地址）。在拿到它之前不执行任何 push。域名那条新阻塞见下面第 9 条。
 7. ~~缺陷 8 的修复还没进"正在服务的那个 MCP 进程"~~ —— **第三次重启后已在会话内闭环**（16:59–17:0x）。`mcp_get proxy_core_stop` 的描述已是"等进程确实退出后再把 verge.yaml 还原…"；随后从会话的 MCP 通道跑了一整轮：`proxy_core_start`（scope=session，命名管道可用、7897 在听、运行中 `ProxyEnable=0x0`）→ `proxy_core_stop` 返回 `{"killed":["clash-verge.exe","verge-mihomo.exe"],"restored":true,"restoredList":[{"name":"verge.yaml",…}],"stillRunning":[],"systemProxyEnabled":false,"warnings":[]}` → 独立复查：无残留进程、7897 监听数 0、`ProxyEnable` 仍是 `0x0`、`verge.yaml` 的 `enable_system_proxy` 已回到 `true`。还原列表只有 verge.yaml 一项也对上了新语义（profiles.yaml 属用户持久数据，不由 stop 还原）。
 8. ~~`prune` 只跑了 dryRun~~ —— **用户点头后实跑完成**（17:0x）：`scanned 30 / deleted 19 / kept 11 / failed 0`，磁盘核对剩 5 份 `profiles.yaml.*` + 5 份 `verge.yaml.*` + 隐藏的 `.npmrc.20260930125506962-001.bak`，`.trash/` 里的撤销副本（`…-Rq14DVii2DNo.yaml`、`…-lkYFauvJwQeP.yaml`）仍在。保留最新 5 份意味着**存活的 5 份备份里仍含原始 token** —— 这是策略本身的选择，不是遗漏；推送前不涉及它们（它们在 `~/.qoder/vpn-proxy/`，不在仓库里）。
+9. **公开仓库前的第二轮重写：订阅域名 → 占位主机**（用户选"再抹一次域名"）。凭据清干净之后又查出一层：订阅**主机名本身**还留在 **16 个 blob** 里 —— 分支 tip 早已换成占位（0 命中），但 master tip 的 plan ×7 + spec ×1 仍带原值，而 PR 的 base 必须是 master，所以推上去就等于把"用的是哪家机场"永久公开。做法：`Temp/qvp-pre-domain.bundle` 存档并 verify → 在**它的克隆**里预演 → 用同一套 `filter-branch --index-filter` 把主机名全量换成仓库既有占位约定 `sub.example.invalid`（本文档不复述原值）。**预演与真仓库的结果逐字节一致**：master `2b3a7cc`、分支 `081dce4`、master tip tree `63020e1…` —— 说明这条替换是确定性的，不是碰运气。扫描用的是主机名探测器的形状法（不看清单，把每个 blob 里的 URL 主机名都提出来分类）：仓库里唯一的非公共主机就是这一个，其余 33 种是 `*.test` / `*.example.invalid` 合成 fixture 与 github.com、qoder.com、pypi.org、www.gstatic.com、cp.cloudflare.com 等公共地址。**验证**：提交数 37→37、父链同构 `ok=37 root=0 bad=0`、29/37 对提交树完全未变、变动的只有 3 个路径（spec ×29、plan ×17、`redact.test.js` ×2）、**分支 tip 的 tree hash 仍然逐字节不变**（`4d5bb1ea0695dc6200e55d7abb01b8b001c07856`，工作成果依旧没被动过）、master tip 只改那两份文档、重写后 `node --test` 165/165；purge（`reflog expire` + `repack -adf --unpack-unreachable=now` + `prune` + `gc --prune=now`）后主机名扫描**真域名 0 命中**、`sub.example.invalid` 从 17 个 blob 增至 25 个、凭据形状扫描继续 **0 个 blob**。第二轮又换了全部 37 个哈希，文档里 8 处旧短哈希引用（plan ×5、acceptance ×3）已按映射表换新，复查残留 0。`qvp-pre-domain.bundle` 里仍带域名 —— 本机存档，不外传。
