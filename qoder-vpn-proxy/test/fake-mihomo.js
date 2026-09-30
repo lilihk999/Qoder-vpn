@@ -30,7 +30,10 @@ function makeHandlers(state) {
         },
       };
     }
-    if (p === '/configs' && method === 'PUT') {
+    // 真机 v1.19.25 实测：PUT /configs 回 204 却什么都不改，只有 PATCH 生效。
+    // 替身必须复刻这个「静默成功」，否则客户端发错方法也能过测试。
+    if (p === '/configs' && method === 'PUT') return { status: 204 };
+    if (p === '/configs' && method === 'PATCH') {
       const patch = body ? JSON.parse(body) : {};
       if (patch.mode) state.mode = patch.mode;
       if (patch.tun) state.tunEnabled = !!patch.tun.enable;
