@@ -4009,8 +4009,8 @@ git commit -m "feat: store 数据目录与订阅仓库(CRUD/写后校验/desync 
   - `buildNpmrcBlock(text, {proxyUrl, noproxy}) -> {text, hadBlock, replaced}`（纯函数）
   - `stripNpmrcBlock(text) -> {text, hadBlock}`（纯函数）
   - `gitProxyKeys(hosts) -> string[]`（`http.https://<host>/.proxy`）
-  - `class ToolConfig({npmrcPath, gitRunner, backupDir, fsImpl?, npmUserConfigPath?})`
-    - `async apply({proxyUrl, targets = ['npm','git'], hosts?, noproxy?}) -> {npm:{action,file,before,after}, git:{applied[],dryRun}}`
+  - `class ToolConfig({npmrcPath, gitRunner, backupDir, fsImpl?, env?})`
+    - `async apply({proxyUrl, targets = ['npm','git'], hosts?, noproxy?}) -> {npm:{action,created,file,backupPath,before,after,lines[]}, git:{applied[]}}`
     - `async revert({targets = ['npm','git'], hosts?}) -> {npm, git}`
     - `async status({hosts?}) -> {npmrc:{path, exists, managed, proxyLines[]}, git:{managed:[{key,value,expected}], mismatch:boolean}, verdict:'managed'|'partial'|'clean'|'foreign'}`
   - 约定：`apply` 幂等（重复 apply 只更新块内容）；`revert` 对干净状态返回 `{action:'noop'}` 而不报错。
@@ -4038,14 +4038,14 @@ function mkGit(initial = {}) {
     store,
     runner: async (args) => {
       log.push(args.join(' '));
-      const i = args.indexOf('--global');
       if (args[0] === 'config' && args[1] === '--global' && args[2] === '--get-regexp') {
         const re = new RegExp(args[3].replace(/^\^/, ''));
         const lines = Object.entries(store).filter(([k]) => re.test(k)).map(([k, v]) => `${k} ${v}`);
         return { code: lines.length ? 0 : 1, stdout: lines.join('\n'), stderr: '' };
       }
       if (args[2] === '--unset') { delete store[args[3]]; return { code: 0, stdout: '', stderr: '' }; }
-      store[args[3]] = args[4];
+      // 写入形态是 `config --global <key> <value>`：key 在 2 不在 3
+      store[args[2]] = args[3];
       return { code: 0, stdout: '', stderr: '' };
     },
   };
@@ -4117,6 +4117,24 @@ test('apply 两次不产生重复块，git 值被更新', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('apply 拒绝非 127.0.0.1 的 proxyUrl，且不留痕', async () => {
+  const { dir, npmrc, git, tc } = mk('badproxy');
+  await assert.rejects(tc.apply({ proxyUrl: 'http://10.0.0.9:7897' }), (e) => e.kind === 'malformed_config');
+  await assert.rejects(tc.apply({ proxyUrl: 'socks5://127.0.0.1:7898' }), (e) => e.kind === 'malformed_config');
+  assert.equal(fs.readFileSync(npmrc, 'utf8'), USER_NPMRC);
+  assert.deepEqual(git.log, [], '校验在动 git 之前');
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'backups')), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('revert 只删托管块，用户手写的 proxy 行逐字节保留', async () => {
+  const { dir, npmrc, tc } = mk('keep-foreign', 'proxy=http://10.0.0.1:3128\nfund=false\n');
+  await tc.apply({ proxyUrl: 'http://127.0.0.1:7897', targets: ['npm'], noproxy: 'localhost' });
+  await tc.revert({ targets: ['npm'] });
+  assert.equal(fs.readFileSync(npmrc, 'utf8'), 'proxy=http://10.0.0.1:3128\nfund=false\n');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('revert 之后 git 的 http.* 全空、npmrc 回到原文', async () => {
   const { dir, npmrc, git, tc } = mk('revert');
   await tc.apply({ proxyUrl: 'http://127.0.0.1:7897', noproxy: 'localhost' });
@@ -4157,6 +4175,23 @@ test('status 能发现 git 值与期望端口不一致（partial）', async () =
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('git 步骤失败时 npmrc 回滚，不留半改', async () => {
+  const dir = path.join(os.tmpdir(), `qvp-tc-gitfail-${process.pid}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(path.join(dir, 'backups'), { recursive: true });
+  const npmrc = path.join(dir, '.npmrc');
+  fs.writeFileSync(npmrc, USER_NPMRC);
+  const tc = new TC.ToolConfig({
+    npmrcPath: npmrc,
+    gitRunner: async () => ({ code: 128, stdout: '', stderr: 'unable to read ~/.gitconfig' }),
+    backupDir: path.join(dir, 'backups'),
+    fsImpl: fs,
+  });
+  await assert.rejects(tc.apply({ proxyUrl: 'http://127.0.0.1:7897', noproxy: 'localhost' }), (e) => e.kind === 'config_write_failed');
+  assert.equal(fs.readFileSync(npmrc, 'utf8'), USER_NPMRC, 'npm 半边不能单独留下托管块');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('npmrc 不存在时 apply 会创建，revert 后留空文件而不是删掉用户目录里的项', async () => {
   const dir = path.join(os.tmpdir(), `qvp-tc-missing-${process.pid}`);
   fs.rmSync(dir, { recursive: true, force: true });
@@ -4191,13 +4226,14 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { ApiError } = require('./envelope');
 const { GIT_PROXY_HOSTS } = require('./env');
+const store = require('./store');
 
 const execFileAsync = promisify(execFile);
 
 const MARK_BEGIN = '# >>> qoder-vpn-proxy >>> (由 proxy_toolconfig 维护，请勿手工编辑此块)';
 const MARK_END = '# <<< qoder-vpn-proxy <<<';
 
-function detectEol(text) { return text.includes('\r\n') ? '\r\n' : '\n'; }
+const detectEol = (text) => (text.includes('\r\n') ? '\r\n' : '\n');
 
 function blockRange(lines) {
   const b = lines.indexOf(MARK_BEGIN);
@@ -4206,16 +4242,19 @@ function blockRange(lines) {
   return { b, e };
 }
 
+function blockLines(proxyUrl, noproxy) {
+  return [MARK_BEGIN, `proxy=${proxyUrl}`, `https-proxy=${proxyUrl}`, `noproxy=${noproxy || 'localhost,127.0.0.1'}`, MARK_END];
+}
+
 function buildNpmrcBlock(text, { proxyUrl, noproxy }) {
   const eol = detectEol(text);
   const lines = text.split(/\r?\n/);
   const range = blockRange(lines);
   const hadBlock = Boolean(range);
   const kept = range ? [...lines.slice(0, range.b), ...lines.slice(range.e + 1)] : lines;
-  // 去掉尾部空行，块后面统一补一个
+  // 去掉尾部空行，块后面统一补一个，还原时才能逐字节回到原样
   while (kept.length && kept[kept.length - 1] === '') kept.pop();
-  const block = [MARK_BEGIN, `proxy=${proxyUrl}`, `https-proxy=${proxyUrl}`, `noproxy=${noproxy || 'localhost,127.0.0.1'}`, MARK_END];
-  return { text: [...kept, ...block, ''].join(eol), hadBlock, replaced: hadBlock };
+  return { text: [...kept, ...blockLines(proxyUrl, noproxy), ''].join(eol), hadBlock, replaced: hadBlock };
 }
 
 function stripNpmrcBlock(text) {
@@ -4228,6 +4267,7 @@ function stripNpmrcBlock(text) {
   return { text: kept.join(eol), hadBlock: true };
 }
 
+/** git 的按域名代理：key 里的 URL 前缀让 git 只对指定 host 走代理，绝不写全局 http.proxy */
 function gitProxyKeys(hosts = GIT_PROXY_HOSTS) {
   return hosts.map((h) => `http.https://${h}/.proxy`);
 }
@@ -4246,7 +4286,9 @@ class ToolConfig {
     this.env = env;
     this.gitRunner = gitRunner || (async (args) => {
       try {
-        const { stdout, stderr } = await execFileAsync('git', args, { windowsHide: true, timeout: 15000, maxBuffer: 1 << 20, env: this.env });
+        const { stdout, stderr } = await execFileAsync('git', args, {
+          windowsHide: true, timeout: 15000, maxBuffer: 1 << 20, env: this.env,
+        });
         return { code: 0, stdout, stderr };
       } catch (e) {
         return { code: e.code === 'ENOENT' ? 127 : (e.status ?? 1), stdout: e.stdout || '', stderr: e.stderr || e.message };
@@ -4261,8 +4303,7 @@ class ToolConfig {
 
   backupNpmrc() {
     if (!this.fs.existsSync(this.npmrcPath)) return null;
-    const name = `.npmrc.${Date.now()}.bak`;
-    const dest = path.join(this.backupDir, name);
+    const dest = path.join(this.backupDir, `.npmrc.${store.stamp()}.bak`);
     try {
       this.fs.mkdirSync(this.backupDir, { recursive: true });
       this.fs.copyFileSync(this.npmrcPath, dest);
@@ -4278,12 +4319,21 @@ class ToolConfig {
   }
 
   async apply({ proxyUrl, targets = ['npm', 'git'], hosts, noproxy }) {
+    // 只允许指向本机 mixed 端口：写进 git/npm 全局配置的代理地址不能是外部机器
     if (!/^https?:\/\/127\.0\.0\.1:\d+$/.test(String(proxyUrl))) {
       throw new ApiError('malformed_config', `proxyUrl 形态异常: ${proxyUrl}`, '应为 http://127.0.0.1:<mixed 端口>，端口取自 proxy_status');
     }
     const out = {};
     if (targets.includes('npm')) out.npm = this.applyNpm({ proxyUrl, noproxy });
-    if (targets.includes('git')) out.git = await this.applyGit({ proxyUrl, hosts });
+    if (targets.includes('git')) {
+      try {
+        out.git = await this.applyGit({ proxyUrl, hosts });
+      } catch (err) {
+        // 两处配置要么都改，要么都不改：只写 npmrc 会让用户以为代理已全量生效
+        if (out.npm) this.restoreNpm(out.npm);
+        throw err;
+      }
+    }
     return out;
   }
 
@@ -4299,8 +4349,14 @@ class ToolConfig {
       backupPath,
       before: text,
       after: built.text,
-      lines: [`proxy=${proxyUrl}`, `https-proxy=${proxyUrl}`, `noproxy=${noproxy || 'localhost,127.0.0.1'}`],
+      lines: blockLines(proxyUrl, noproxy).slice(1, 4),
     };
+  }
+
+  restoreNpm(npm) {
+    if (npm.created && this.fs.existsSync(this.npmrcPath)) { try { this.fs.unlinkSync(this.npmrcPath); } catch { /* 交给调用方的错误 */ } return; }
+    if (!npm.backupPath) return;
+    try { this.fs.copyFileSync(npm.backupPath, this.npmrcPath); } catch { /* 回滚失败时至少报了 git 侧的错误 */ }
   }
 
   async applyGit({ proxyUrl, hosts }) {
@@ -4361,7 +4417,10 @@ class ToolConfig {
 
     const r = await this.gitRunner(['config', '--global', '--get-regexp', '^http\\.']);
     const gitPairs = r.stdout.trim()
-      ? r.stdout.trim().split(/\r?\n/).map((l) => { const i = l.indexOf(' '); return { key: l.slice(0, i), value: l.slice(i + 1).trim() }; })
+      ? r.stdout.trim().split(/\r?\n/).map((l) => {
+        const i = l.indexOf(' ');
+        return { key: l.slice(0, i), value: l.slice(i + 1).trim() };
+      })
       : [];
     const keys = gitProxyKeys(hosts);
     const managed = keys.map((key) => {
@@ -4370,14 +4429,16 @@ class ToolConfig {
     });
     const mismatch = Boolean(expectedProxyUrl) && managed.some((m) => m.value !== expectedProxyUrl);
 
+    const npmManaged = Boolean(range);
+    const gitManaged = managed.some((m) => m.value);
     let verdict;
-    if (range && !mismatch) verdict = 'managed';
-    else if (range || managed.some((m) => m.value)) verdict = mismatch ? 'partial' : 'partial';
+    if (npmManaged && gitManaged && !mismatch) verdict = 'managed';
+    else if (npmManaged || gitManaged) verdict = 'partial';
     else if (proxyLines.length || gitPairs.length) verdict = 'foreign';
     else verdict = 'clean';
 
     return {
-      npmrc: { path: this.npmrcPath, exists, managed: Boolean(range), managedLines: managedNpmLines, proxyLines },
+      npmrc: { path: this.npmrcPath, exists, managed: npmManaged, managedLines: managedNpmLines, proxyLines },
       git: { managed, mismatch, otherHttpKeys: gitPairs.filter((p) => !keys.includes(p.key)).map((p) => p.key) },
       verdict,
     };
@@ -4387,22 +4448,30 @@ class ToolConfig {
 module.exports = { ToolConfig, buildNpmrcBlock, stripNpmrcBlock, gitProxyKeys, MARK_BEGIN, MARK_END };
 ```
 
-- [ ] **Step 4: 修 `verdict` 判定表的重复分支**
+- [ ] **Step 4: 判定表与本轮落地的判断（不留 TODO）**
 
-Step 3 的 `verdict` 那段有个坏味道：`range || managed.some(...)` 两个分支都返回 `'partial'`。这是自审时发现的，按下面这张表收敛（语义必须和 spec 验收 6 对得上）：
+Step 3 草稿的 `verdict` 那段有重复分支（`range || managed.some(...)` 两个分支都返回 `partial`），按 spec 验收 6 的语义收敛成
+`managed / partial / foreign / clean` 四档 —— 已并入 Step 3 的最终代码。
 
-```js
-    const npmManaged = Boolean(range);
-    const gitManaged = managed.some((m) => m.value);
-    let verdict;
-    if (npmManaged && gitManaged && !mismatch) verdict = 'managed';
-    else if (npmManaged || gitManaged) verdict = 'partial';
-    else if (proxyLines.length || gitPairs.length) verdict = 'foreign';
-    else verdict = 'clean';
-```
+本轮另外几处必须记住的事：
+
+1. **计划里 `mkGit` 假 runner 的写入分支下标错了**：`store[args[3]] = args[4]`。真实 argv 是
+   `git config --global <key> <value>`，key 在 index 2、value 在 index 3；写错后 git.store 里出现的键是代理 URL 本身、值是
+   `undefined`，于是"两次 apply 更新 git 值""revert 后 http.* 全空""status=managed"三条测试一起红。
+   **教训**：fake 的 argv 解析必须对着真实命令行形状核一遍，它红了未必是实现错了。Task 15/17 再写 git 假 runner 时直接抄这里修好的版本。
+2. **`.npmrc` 备份名改用 `store.stamp()`**（原来是 `Date.now()`）：与 `CvrConfig`/`SubscriptionRepo` 同一套时间戳，
+   `store.listBackupsIn()` 的 `\.[\d-]+\.bak$` 才能一次扫全；同毫秒撞名的问题也顺带解决（stamp 自带序号）。
+3. **apply 的两步要么都改要么都不改**：npmrc 写完、git 失败时把 npmrc 回滚到本次备份（若文件是本次创建的则删掉）。
+   只留 npmrc 半边会让用户以为代理已全量生效。测试 `git 步骤失败时 npmrc 回滚，不留半改` 钉这一点。
+4. **proxyUrl 校验前置于任何写入与子进程**：只接受 `http(s)://127.0.0.1:<port>`。这条配置会永久留在
+   `~/.npmrc` 与 git 全局配置里，指向外部机器的地址必须是显式决定，不能由一次参数打错触发。
+   校验失败时备份目录必须仍是空的（`apply 拒绝非 127.0.0.1 的 proxyUrl，且不留痕`）。
+5. **revert 逐字节还原**：`stripNpmrcBlock` 只删标记块，用户手写的 `proxy=` 行、注释、其他 registry 原样保留；
+   文件若是我们创建的（内容只剩托管块）就整文件删掉，不留空文件。
+6. **构造函数去掉 `npmUserConfigPath`**（草稿里有名无实，没有调用方），`apply` 的返回也不再有 `git.dryRun`。
 
 Run: `node --test test/toolconfig.test.js`
-Expected: PASS（10 个测试）。`status 三种状态` 那条如果 `foreign` 判成 `clean`，说明 `proxyLines` 正则漏了没有托管块的裸 `proxy=` 行。
+Expected: PASS（13 个测试）。`status 三种状态` 那条如果 `foreign` 判成 `clean`，说明 `proxyLines` 正则漏了没有托管块的裸 `proxy=` 行。
 
 - [ ] **Step 5: 全量测试与提交**
 
