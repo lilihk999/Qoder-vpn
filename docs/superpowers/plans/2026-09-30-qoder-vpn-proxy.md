@@ -4492,15 +4492,16 @@ git commit -m "feat: toolconfig npmrc 托管块与 git 域名代理的 apply/rev
 - Test: `qoder-vpn-proxy/test/diagnose.test.js`
 
 **Interfaces:**
-- Consumes: `probeTcp` (Task 8)、`buildProxyEnv`/`inlinePrefix` (Task 4)、`ApiError` (Task 3)
+- Consumes: `redactUrl`/`redactText` (Task 3)。本模块**不** require transport/discovery —— `portAlive` 由调用方传入（Task 15 的 `proxy_diagnose` 用 Task 8 的 `probeTcp` 得出）。探测模块因此完全不碰 CVR，测试也无需替身；副作用只有 `curl` 子进程。
 - Produces:
   - `DEFAULT_TARGETS = [{label, url, expectDirect}]`（5 条：github、raw.githubusercontent、npm registry、pypi、qoder.com；`expectDirect` 表示"预期直连就该通，若不通说明网络异常"）
   - `parseCurlOut(stdout) -> {status, connectMs, totalMs, remoteIp}`
   - `curlArgs({url, proxy, timeoutMs}) -> string[]`（纯函数，测试的主战场）
   - `probe({url, proxy, curlRunner, timeoutMs}) -> Promise<{ok, status, connectMs, totalMs, remoteIp, error}>`
-  - `summarize(rows) -> {verdict, advice[]}`（纯函数）
-  - `runDiagnose({runtime, proxyUrl, targets, curlRunner, timeoutMs}) -> Promise<{rows, verdict, advice, note}>`
-  - 行形状：`{label, url, direct: probeResult, proxied: probeResult|'skipped', conclusion}`
+  - `rowConclusion(row) -> string`、`summarize(rows) -> {verdict, advice[]}`（纯函数）
+  - `runDiagnose({proxyUrl, targets = DEFAULT_TARGETS, curlRunner, timeoutMs = 8000, portAlive = true}) -> Promise<{proxyUrl, proxyPortAlive, rows, verdict, advice, note}>`
+  - 行形状：`{label, url, expectDirect, direct: probeResult, proxied: probeResult|'skipped', conclusion}`
+  - `WRITE_OUT`（curl `-w` 模板，导出只为让"4 元组顺序"这件事有唯一出处）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -4602,21 +4603,40 @@ test('代理端口未监听时跳过经代理轮，不产生误导性的"代理�
 });
 
 test('输出里没有任何 token 或凭据', async () => {
+  const U = 'https://sub.example.test/PATH?token=SECRET123';
   const rows = await D.runDiagnose({
     proxyUrl: PX,
-    targets: [{ label: '订阅站', url: 'https://sub.example.invalid/BGqmX0c?token=SECRET123', expectDirect: true }],
-    curlRunner: runner({ 'direct:https://sub.example.invalid/BGqmX0c?token=SECRET123': { out: '200 0.2 2.1 1.1.1.1' }, 'proxy:https://sub.example.invalid/BGqmX0c?token=SECRET123': { out: '200 0.2 2.1 1.1.1.1' } }),
+    targets: [{ label: '订阅站', url: U, expectDirect: true }],
+    curlRunner: runner({ [`direct:${U}`]: { out: '200 0.2 2.1 1.1.1.1' }, [`proxy:${U}`]: { out: '200 0.2 2.1 1.1.1.1' } }),
     timeoutMs: 8000,
   });
   assert.doesNotMatch(JSON.stringify(rows), /SECRET123/);
   assert.match(rows.rows[0].url, /token=<redacted>/);
 });
 
-test('DEFAULT_TARGETS 不含用户订阅地址（不做附带外发）', () => {
-  assert.ok(!D.DEFAULT_TARGETS.some((t) => /123adsas|token=/.test(t.url)), JSON.stringify(D.DEFAULT_TARGETS));
+test('curl 不在 PATH 时报"无法执行"而不是假装超时', async () => {
+  const r = await D.probe({
+    url: 'https://github.com', proxy: null, timeoutMs: 8000,
+    curlRunner: async () => { const e = new Error('spawn curl ENOENT'); e.code = 'ENOENT'; throw e; },
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, null);
+  assert.match(r.error, /curl 无法执行/);
+});
+
+test('DEFAULT_TARGETS 只列公开站点，不做附带外发', () => {
+  // 白名单比"排除订阅域名"更硬：任何一次把订阅地址塞进探测目标的改动都会被这里拦住，
+  // 而负向 grep 只认识写死的那一个域名。
+  const ALLOW = /^(?:github\.com|raw\.githubusercontent\.com|registry\.npmjs\.org|pypi\.org|qoder\.com)$/;
+  for (const t of D.DEFAULT_TARGETS) {
+    assert.match(t.url, /^https:\/\//, t.url);
+    assert.doesNotMatch(t.url, /[?&]token=/, t.url);
+    assert.ok(ALLOW.test(new URL(t.url).hostname), t.url);
+  }
   assert.ok(D.DEFAULT_TARGETS.some((t) => /github\.com/.test(t.url)));
   assert.equal(D.DEFAULT_TARGETS.length, 5);
 });
+
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -4769,12 +4789,19 @@ async function runDiagnose({
 }
 
 module.exports = { DEFAULT_TARGETS, WRITE_OUT, curlArgs, parseCurlOut, probe, rowConclusion, summarize, runDiagnose };
+
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `node --test test/diagnose.test.js`
-Expected: PASS（7 个测试）。`curlArgs` 里 `--proxy` 插在 `-w` 之前只是可读性，断言只看 `includes`；若你调整顺序，别改动 `--noproxy` 与 `--proxy` 互斥这条。
+Expected: PASS（9 个测试）。落地时对草稿测试做了两处改动，都不是美化：
+
+1. `DEFAULT_TARGETS` 的守卫从"负向 grep 订阅域名"换成**公开域名白名单**（`ALLOW.test(new URL(t.url).hostname)`）。负向 grep 只认识写死的那一个域名，将来把任何别的地址（包括订阅地址的另一个形态）塞进探测目标都拦不住；白名单是"默认拒绝"，顺带把 token 查询参数也禁了。
+2. 那条"输出里没有任何 token"的测试改用 `sub.example.test`。测试文件本身就是会被提交进仓库的源码，把真实订阅域名和路径抄进去，等于让测试变成凭据的一份副本 —— Task 12 的测试已经因为同样的理由用过 `panel.example.invalid`。
+3. 补了 `curl 不在 PATH` 这条：`probe` 在 runner 抛异常时返回 `error: 'curl 无法执行: …'`，与"超时"是两种不同的故障，Windows 上 `curl.exe` 自 1803 起自带，但用户机器可能被精简过。
+
+`curlArgs` 里 `--proxy` 插在 `-w` 之前只是可读性，断言只看 `includes`；若你调整顺序，别改动 `--noproxy` 与 `--proxy` 互斥这条。
 
 - [ ] **Step 5: 真机跑一次直连基线（只读，不启动 CVR）**
 
@@ -4789,6 +4816,8 @@ runDiagnose({proxyUrl:'http://127.0.0.1:7897', portAlive:false}).then(r=>{
 ```
 
 Expected: 与 spec §2 基线一致 —— GitHub 两行 FAIL（超时）、npm/PyPI/Qoder 直连 OK、`verdict` 为"代理未运行…"。若 GitHub 直连也 OK 了，说明网络状况已变化，把新基线写回 spec §2 再继续。
+
+**实测结果（已发生，spec §2 已按此更新）**：5 行全部 `直连OK 200`，`verdict` 为"代理未运行，只完成直连探测"。这不是探测在说谎 —— 单独复核过 3 轮 `github.com` 与 `raw.githubusercontent.com`（6/6 全部 200，对端 `20.205.243.166` / `185.199.108.133` 是真实 GitHub/Fastly IP，connect 约 0.09s），同时确认：本轮 `--noproxy '*'`、`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` 均未设置、7897/7898/7899/9097 全部未监听、`ipconfig` 只有物理网卡和 vEthernet Default Switch（无 TUN 网卡）。结论是**网络状况确实变了，GitHub 直连会随时段翻转**，spec §2 里同时保留首轮与复测两行，并把"是否需要代理"的职责正式交给 `proxy_diagnose` 的当场输出。
 
 - [ ] **Step 6: 全量测试与提交**
 

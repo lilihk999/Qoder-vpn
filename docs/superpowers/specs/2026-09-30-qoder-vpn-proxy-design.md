@@ -39,15 +39,18 @@
 | TUN | `enable_tun_mode: false` | `verge.yaml` |
 | 运行模式 | `mode: rule`，`dns.enhanced-mode: fake-ip`（198.18.0.1/16） | `clash-verge.yaml` |
 | 进程与端口现状 | **无 CVR/mihomo 进程**；7897、9097 均拒绝连接；HKCU 无 ProxyEnable 项（系统代理关闭） | netstat / tasklist / reg / curl |
-| 直连基线 | `github.com` 12s 超时；`google.com` 12s 超时；订阅站 2.1s 返回 200 | curl |
+| 直连基线（首轮，本日早间） | `github.com` 12s 超时；`google.com` 12s 超时；订阅站 2.1s 返回 200 | curl |
+| 直连基线（Task 14 落地时复测） | `github.com` 3/3 直连 200（connect 0.09s、total 0.76–0.84s、ip 20.205.243.166）、`raw.githubusercontent.com` 3/3 直连 200（total 0.40s、ip 185.199.108.133）；npm registry / PyPI / qoder.com 亦直连 200。复测时 `--noproxy '*'`、无任何代理环境变量、mihomo 端口 7897/7898/7899/9097 全部未监听、无 TUN 网卡，且对端为真实 GitHub/Fastly IP —— 即这轮"直连"没有被任何隐藏路径污染 | curl + `server/diagnose.js` |
 | 订阅 UA 门控 | UA=`clash-verge/v2.3.0` → 完整 YAML 28648B + `subscription-userinfo` + `content-disposition: 南山云`；UA=普通 curl → 仅 base64 节点串 5764B | 三组 UA 对比实测 |
 | 已导入订阅 | profile `Rq14DVii2DNo`「南山云」，url 路径 `SUBPATH`，当前选中 `TW 2 \| v4`，用量 upload 359MB / download 53.6GB / total 64.4GB | `profiles.yaml` |
-| 用户提供的新订阅 | `https://sub.example.invalid/SUBPATH?token=<同 token>`，userinfo 显示 total=74826208722 | curl 实测 || 运行时 | Node v22.23.3、npm 10.9.9 可用；Python 为 Store stub 不可用；PowerShell ConstrainedLanguage | 版本探测 |
+| 用户提供的新订阅 | `https://sub.example.invalid/SUBPATH?token=<同 token>`，userinfo 显示 total=74826208722 | curl 实测 |
+| 运行时 | Node v22.23.3、npm 10.9.9 可用；Python 为 Store stub 不可用；PowerShell ConstrainedLanguage | 版本探测 |
 | Qoder 插件格式 | `.qoder-plugin/plugin.json` 清单 + `mcp.json` 声明 **stdio 型本地 MCP server**（`{"command":"npx","args":[...]}` 已验证可行） | 读取 playwright / chrome-devtools 已装插件 |
 | 会话环境变量注入 | `~/.qoder/session-env/<会话UUID>/sessionstart-hook-N.sh` 机制存在（本会话可见空文件） | 目录列举 |
 
-两个关键推论：
+四个关键推论：
 
+- **直连基线会随时段翻转，所以"要不要代理"必须由工具当场判定，不能写死在插件里**。首轮实测 GitHub 直连超时，同日复测 6/6 直连 200。这把插件的价值从"GitHub 必须走代理"改为"在需要的那一刻给出证据"：`proxy_diagnose` 是判定入口，而不是内置一条永真的"给 github.com 加代理"规则。相应地，任何持久化写入（`proxy_toolconfig`）都应由诊断结果驱动，且在直连已恢复时应能回退。
 - **系统代理 ≠ 命令行代理**。`curl`/`git`/`pip`/Node `fetch`/Python `requests` 都不读 WinINET 系统代理，只认环境变量。因此"让 Qoder 走代理"必须由环境变量层完成，无法用系统代理替代。
 - **TCP 控制口默认不可用**，所以命名管道是首选通道；TCP 需要显式开启，作为兜底路径。
 - 先前确认的"订阅更新为新链接"这一动作，在新模型下不再是特例，而是 `proxy_subscription_edit(uid=Rq14DVii2DNo, url=新链接)` 的一次调用；也可改为 `proxy_subscription_add` 新增一条再 `proxy_subscription_activate`。插件不把这个选择硬编码进代码，安装时作为一次初始化操作执行，事后仍可回退。
