@@ -1,0 +1,61 @@
+# Profiles Config for Clash Verge
+
+current: TESTUIDd7225
+items:
+- uid: Merge
+  type: merge
+  name: null
+  file: Merge.yaml
+  updated: 1787138083
+- uid: Script
+  type: script
+  name: null
+  file: Script.js
+  updated: 1787138083
+- uid: TESTUID76f79
+  type: merge
+  name: null
+  file: TESTUID76f79.yaml
+  updated: 1787371270
+- uid: TESTUID691c2
+  type: script
+  name: null
+  file: TESTUID691c2.js
+  updated: 1787371270
+- uid: TESTUID3d968
+  type: rules
+  name: null
+  file: TESTUID3d968.yaml
+  updated: 1787371270
+- uid: TESTUID4b266
+  type: proxies
+  name: null
+  file: TESTUID4b266.yaml
+  updated: 1787371270
+- uid: TESTUIDc197f
+  type: groups
+  name: null
+  file: TESTUIDc197f.yaml
+  updated: 1787371270
+- uid: TESTUIDd7225
+  type: remote
+  name: 测试订阅
+  file: TESTUIDd7225.yaml
+  url: https://panel.example.invalid/SUBPATH?token=TOKEN_PLACEHOLDER
+  selected:
+  - name: 测试订阅
+    now: TW 2 | v4
+  extra:
+    upload: 359591668
+    download: 53636662825
+    total: 64424509440
+    expire: 0
+  updated: 1790668363
+  option:
+    update_interval: 1440
+    allow_auto_update: true
+    merge: TESTUID76f79
+    script: TESTUID691c2
+    rules: TESTUID3d968
+    proxies: TESTUID4b266
+    groups: TESTUIDc197f
