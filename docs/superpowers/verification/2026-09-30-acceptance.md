@@ -30,7 +30,7 @@ verdict: 代理对 2 项目前是必需的
 **结论**：达成。GitHub 两行确实从直连失败翻成经代理成功，且这一轮系统代理读回来是 0。
 
 **遗留问题**：
-1. 第一版输出里 `direct.totalMs` 是 `null`（上面这段是修复后的重跑）。原因是 curl 8.17.0 在连接失败时 `%{remote_ip}` 打的是空串，`parseCurlOut` 的四段正则整行匹配失败，把耗时一起丢了。已按 TDD 修（commit `280cf21`），并补了两条测试锁住"失败行也要有耗时"。
+1. 第一版输出里 `direct.totalMs` 是 `null`（上面这段是修复后的重跑）。原因是 curl 8.17.0 在连接失败时 `%{remote_ip}` 打的是空串，`parseCurlOut` 的四段正则整行匹配失败，把耗时一起丢了。已按 TDD 修（commit `5f8ced4`），并补了两条测试锁住"失败行也要有耗时"。
 2. `npm registry 经代理反而失败`是**机场侧**（该节点或分流规则），不是插件问题：同一轮里 npm 直连 4505ms 是通的。
 3. `verdict` 只看"直连不通"的项，所以 npm 那行 FAIL 没进 verdict。这是设计（回答"该不该走代理"），但读表的人容易误以为 npm 没问题，README 里已按"逐行 conclusion 优先于 verdict"来讲。
 
@@ -235,7 +235,7 @@ SEitsxVMpF0c | 南山云(新) | active=true | nodes=15 | remark=2026-09-30 换�
 **结论**：达成（带一条限定）。自定义名称与备注在 update 后保留、`activate` 写入的 `current` 落盘并被 CVR 接受、激活项删除被拦截、内容文件进 `.trash` 可放回 —— 都拿到了真机返回体。
 
 **遗留问题（重要，实测推翻了原设计假设）**：
-1. `activate` 第一次返回 `{"ok":false,"kind":"channel_unavailable","message":"POST /configs/reload -> HTTP 404 404 page not found"}` —— **mihomo v1.19.25 根本没有 reload 端点**（CVR 走 GUI 侧的 profile 切换，不走这个 REST 路径）。注册表写入其实已经成功。已按 TDD 改成如实上报（commit `0c105ac`）：`reloaded` / `needsRestart` / `note` 三个字段明说"profiles.yaml 已改，需 `proxy_core_stop` + `proxy_core_start`（或 GUI 点一下该订阅）才真正加载新节点"。
+1. `activate` 第一次返回 `{"ok":false,"kind":"channel_unavailable","message":"POST /configs/reload -> HTTP 404 404 page not found"}` —— **mihomo v1.19.25 根本没有 reload 端点**（CVR 走 GUI 侧的 profile 切换，不走这个 REST 路径）。注册表写入其实已经成功。已按 TDD 改成如实上报（commit `c46e474`）：`reloaded` / `needsRestart` / `note` 三个字段明说"profiles.yaml 已改，需 `proxy_core_stop` + `proxy_core_start`（或 GUI 点一下该订阅）才真正加载新节点"。
 2. 没观察到 `profile_registry_desync` —— CVR 运行期确实会重写 `profiles.yaml`，但插件的写后重读校验都通过了，所以计划里预设的"先停核心再操作订阅"这条备用路径没有被触发。
 3. 操作过程中我自己犯过一次错：拿**未激活**的 uid 去测删除保护，误删了 `lkYFauvJwQeP`。已重新添加（新 uid `SEitsxVMpF0c`）并正确验证了 `subscription_active_protected`。这条留在文档里，作为"删除保护只对 current 生效"的事实记录。
 
@@ -328,7 +328,7 @@ ProxyEnable = 0x0
 - `verge.yaml`（插件唯一为"压制系统代理"而改的会话级文件）：当前 = 最新备份 = 基线，**逐字节一致**，还原链路（含 `proxy_core_stop` 的自动回滚）成立。
 - `profiles.yaml`：**故意**不等于基线 —— 它承载的是用户主动要求的订阅切换（验收 5）。把"改动"和"泄漏"分开看：切换前的原始字节就在 `profiles.yaml.20260930-123930-488-001.bak` 里，已验证与基线逐字节一致，随时可 `proxy_restore_config` 回滚。
 
-**遗留问题**：早期版本的 `listBackups` 把备份按**文件名字典序**排，而目录里混着两种时间戳格式（`20260930-123930-488-001` 带连字符、`20260930130959726-001` 不带），于是"最新一份"会挑到过期那份，`restore` 会退回更老的状态。已按 TDD 改成按 mtime 排（commit `29196d1`），并用 `utimesSync` 钉住 mtime 的测试复现了原 bug。同类地，`stop()` 原本连 `profiles.yaml` 一起回滚，会撤销用户刚切的订阅 —— 已收窄到 `SESSION_RESTORE_NAMES = ['verge.yaml']`，上面那条 `stop` 返回体的 `restoredList` 只有一项 `verge.yaml` 就是它的直接证据。
+**遗留问题**：早期版本的 `listBackups` 把备份按**文件名字典序**排，而目录里混着两种时间戳格式（`20260930-123930-488-001` 带连字符、`20260930130959726-001` 不带），于是"最新一份"会挑到过期那份，`restore` 会退回更老的状态。已按 TDD 改成按 mtime 排（commit `1cc84bc`），并用 `utimesSync` 钉住 mtime 的测试复现了原 bug。同类地，`stop()` 原本连 `profiles.yaml` 一起回滚，会撤销用户刚切的订阅 —— 已收窄到 `SESSION_RESTORE_NAMES = ['verge.yaml']`，上面那条 `stop` 返回体的 `restoredList` 只有一项 `verge.yaml` 就是它的直接证据。
 
 ---
 
@@ -508,6 +508,11 @@ diff -rq server hooks skills + cmp .qoder-plugin/plugin.json → 无差异；
 3. ~~`backups/profiles.yaml.*` 含原始 token，无保留期策略~~ —— **已由用户决定并实现（①，计划 Task 18）**：`proxy_restore_config prune=true`。残留局限见上面"后记"。
 4. ~~CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值~~ —— **用户已定（②追问后）："注册表不要清掉"**。两个值保持现状、插件与用户都不动它们；当前 `ProxyServer=127.0.0.1:7897`、`ProxyOverride=localhost;127.*;…` 仍在原位，`ProxyEnable=0` 使它们惰性（系统代理仍关闭，浏览器/游戏不受影响）。**但要说清一件事**：15:16 那次缺陷 8 让 `ProxyEnable` 变成过 `0x1`，我按上面"破防记录"里的命令把它写回 `0x0` —— 这是**唯一一次**注册表写入，且写回的是本机基线值（把 CVR 造成的偏离恢复原样），不是清理用户数据。除此之外本轮收尾未对机器产生任何不可逆改动。
 5. ~~"Qoder 模型请求要不要走代理"仍未回答~~ —— **用户已定（③）：不走**。已写进 SKILL.md 边界与 spec §8。
-6. **推送前的新增阻塞（本次核查发现，比上面几条都严重）**：spec §2 曾把订阅 URL 的完整路径段写进事实表，计划里 `redactUrl('…?token=<完整 token>')` 那行测试样例曾带**完整 32 位 token**。逐提交扫描全部 31 个提交把范围钉准：**6 个提交的树里仍带完整 token** —— master 的 `ecd10fd`/`d75f7e8`/`37b1d6c`/`0f8410a` 加分支早期的 `c9fdb9e`/`7673dd0`；分支从 `9957740`（Task 5）起树里已无真 token，**tip 干净**（HEAD 全仓只剩合成 fixture `token=0123…`，计划与本文档只剩 8 字符 grep 前缀）。但 PR 的 base 必须是 master，分支自身历史也带着那 6 个 blob，所以"只推 feature 分支"同样会泄露。本仓库至今 `git remote -v` 为空、`gh` 不在 PATH，所以尚未有任何内容外泄 —— 属可避免，不是已发生。可选处置：① 机场面板先轮换 token（最彻底；轮换后计划与本文档里那四个 8 字符 grep 前缀要一起更新）；② 重写那 6 个提交里对应的行（目前没有 remote，重写成本极低，但属破坏性 git 操作，需显式同意）；③ **推一份不含历史的干净快照**：从当前 tip 建 orphan 分支作为 base + 工作分支，公开的任何 blob 里都不含秘密，代价是丢掉逐任务的提交粒度；④ 暂不推。未选定前**不执行任何 push**；选定后还需要用户给出 remote URL 与仓库可见性（公开/私有），且 `gh` 缺失意味着 PR 只能用 API token 或网页手工创建。
-7. **缺陷 8 的修复还没进"正在服务的那个 MCP 进程"** —— 安装副本已同步且自测 165/165，但本会话用的仍是重启前加载的代码。证据（15:4x 直接问正在服务的服务器）：`mcp_get proxy_core_stop` 返回的描述还是"把 verge.yaml 与 profiles.yaml 还原"那句旧文案，`inputSchema.properties` 只有 `restore` —— 没有 `stillRunning`/`systemProxyEnabled` 那条路径；同一次 `mcp_get proxy_restore_config` 却带着 `prune`/`dryRun`，说明这个进程是 Task 18 之后、缺陷 8 之前加载的。所以**此刻从会话里调 `proxy_core_stop` 依旧会踩这个坑**。上面的真机复验是用已安装文件另起子进程做的（`node Temp/qvp-defect8-verify.js`），不是从会话的 MCP 通道跑的。下次重启 Qoder 后应验：`proxy_core_stop` 的描述已是"等进程确实退出后…"，返回体里有 `stillRunning` / `systemProxyEnabled` / `warnings` 三个字段，且停止后 `ProxyEnable` 仍为 `0x0`。在此之前不能宣称缺陷 8 在 Qoder 内闭环。
-8. **`prune` 只跑了 dryRun**：默认策略下会删 16 个（同一名超过 5 份）。备份是本轮唯一的撤销手段，删除不可逆，等用户明确点头才执行。
+6. ~~推送前的凭据阻塞~~ —— **已按用户选的 ② 重写完成**（17:1x–17:3x）。核查先纠正了两件事：
+   - **范围比"6 个提交"大，而且凭据不止一个 token**。用本机全部来源配对（`profiles.yaml`、store 里保留的 11 份备份、`.trash`、会话 transcript）得到的最终清单是 **1 个 32 位 token + 2 个 20 位订阅路径段** —— 第二个路径段是换链接之前的旧地址，只活在历史文档里，从当前配置现取凭据的做法会漏掉它。逐提交精确矩阵：token 命中 4 个 blob、两个路径段各命中 13 个 blob，**29/36 个提交的树带凭据**，master tip 自己带 5 个。
+   - **只扫 `.md` 会漏**。`redact.test.js` 的**两个历史版本**里带真 token（tip 上是合成 fixture，所以"tip 干净"这个结论本身没错，但按 tip 判断范围会低估历史）。
+   **做法**：先把原历史 `git bundle` 存档并 verify（`Temp/qvp-pre-scrub.bundle`），在**它的克隆**里预演一遍再动真仓库。用 `filter-branch --index-filter` 直接改索引、不做 checkout —— 实测 `--tree-filter` 在这台机器上会把整棵树换成 CRLF（`core.autocrlf=true` 且 master 上没有 `.gitattributes`），而且 `git archive | tar -x` 提取出来的文件每个都"看起来变了"，逐行对比会得出 5761 行全改的假象。替换规则：真 token → 仓库既有的合成 fixture、真路径段 → `SUBPATH`。**6/8 位前缀规则试过就撤**：它命中了文档里 `UID_ALPHABET` 常量的字面量（误伤），而 8/32 位前缀不构成可用凭据，用户已决定保留它们作 grep 锚点。
+   **验证**（克隆与真仓库各一遍）：`0 / 36` 提交命中；提交数 36→36；父链同构 `ok=35 root=1 bad=0`；36 对提交之间只有 3 个文件变动（spec ×29、plan ×14、`redact.test.js` ×2）；**分支 tip 的 tree hash 与重写前逐字节相同**（`3e251f0343dded12dbb99a228f140ed6507c228a`），即工作成果没被动过；master tip 只改那两份文档；重写后 `node --test` 165/165。**清不可达对象单跑 `git gc --prune=now` 不够**（克隆里实测残留 20 个旧 blob），要 `git repack -adf --unpack-unreachable=now` + `git prune --expire=now`，对象数 477→361 才归零；之后用**通用模式探测器**（不看清单，只按 `token=<32hex>` 与 16–24 位路径段的形状）扫全部对象 **0 命中**。文档里 15 处旧提交短哈希引用已按映射表换新（`6808775` 那处是配额字节数，不是哈希，属误报）。
+   仍待用户给出：**remote URL 与仓库可见性**（公开/私有）；`gh` 不在 PATH，PR 只能用 API token 或网页手工创建。**在拿到这两项之前不执行任何 push。**
+7. ~~缺陷 8 的修复还没进"正在服务的那个 MCP 进程"~~ —— **第三次重启后已在会话内闭环**（16:59–17:0x）。`mcp_get proxy_core_stop` 的描述已是"等进程确实退出后再把 verge.yaml 还原…"；随后从会话的 MCP 通道跑了一整轮：`proxy_core_start`（scope=session，命名管道可用、7897 在听、运行中 `ProxyEnable=0x0`）→ `proxy_core_stop` 返回 `{"killed":["clash-verge.exe","verge-mihomo.exe"],"restored":true,"restoredList":[{"name":"verge.yaml",…}],"stillRunning":[],"systemProxyEnabled":false,"warnings":[]}` → 独立复查：无残留进程、7897 监听数 0、`ProxyEnable` 仍是 `0x0`、`verge.yaml` 的 `enable_system_proxy` 已回到 `true`。还原列表只有 verge.yaml 一项也对上了新语义（profiles.yaml 属用户持久数据，不由 stop 还原）。
+8. ~~`prune` 只跑了 dryRun~~ —— **用户点头后实跑完成**（17:0x）：`scanned 30 / deleted 19 / kept 11 / failed 0`，磁盘核对剩 5 份 `profiles.yaml.*` + 5 份 `verge.yaml.*` + 隐藏的 `.npmrc.20260930125506962-001.bak`，`.trash/` 里的撤销副本（`…-Rq14DVii2DNo.yaml`、`…-lkYFauvJwQeP.yaml`）仍在。保留最新 5 份意味着**存活的 5 份备份里仍含原始 token** —— 这是策略本身的选择，不是遗漏；推送前不涉及它们（它们在 `~/.qoder/vpn-proxy/`，不在仓库里）。
