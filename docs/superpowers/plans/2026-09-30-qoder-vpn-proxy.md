@@ -394,8 +394,10 @@ test('NO_PROXY 恒含 loopback 且不含 CIDR', () => {
 
 test('git 用域名前缀代理而不是全局 http.proxy', () => {
   const e = buildProxyEnv({ mixedPort: 7897, socksPort: 7898 });
-  assert.ok(e.git.some((l) => l.includes('http.https://github.com.proxy')));
+  assert.ok(e.git.some((l) => l.includes('http.https://github.com/.proxy')));
   assert.ok(!e.git.some((l) => /(^| )http\.proxy/.test(l)), '不允许全局 http.proxy');
+  // 必须带尾斜杠：无斜杠的 http.https://github.com 会被 https://github.com.evil.example 前缀匹配到
+  assert.ok(!e.git.some((l) => /http\.https:\/\/github\.com\.proxy/.test(l)), '不能漏掉 URL 与 key 之间的斜杠');
 });
 
 test('npm 片段含 registry 与 noproxy', () => {
