@@ -244,8 +244,8 @@ const assert = require('node:assert/strict');
 const { redactText, redactUrl } = require('../server/redact');
 
 test('redactUrl 抹掉 token 但保留域名与路径', () => {
-  const out = redactUrl('https://sub.example.invalid/BGqmX0c?token=0123456789abcdef0123456789abcdef');
-  assert.equal(out, 'https://sub.example.invalid/BGqmX0c?token=<redacted>');
+  const out = redactUrl('https://sub.example.invalid/SUBPATH?token=0123456789abcdef0123456789abcdef');
+  assert.equal(out, 'https://sub.example.invalid/SUBPATH?token=<redacted>');
 });
 
 test('redactText 抹掉 token 型 query', () => {
@@ -500,14 +500,27 @@ git commit -m "feat: env 生成按 curl/npm/git 分别适配的代理配置"
 
 - [ ] **Step 1: 准备 fixture**
 
-用 Task 1 之前已跑通的抓取方式生成 fixture（只取前 40 行即可，避免把凭据写进仓库；生成后手工把 `server:`/`password:`/`uuid:` 值替换为 `192.0.2.10`、`REDACTED`）：
+用 Task 1 之前已跑通的抓取方式生成 fixture。抓取产物放在仓库外（`%TEMP%`），再用一次性脱敏脚本写入 `test/fixtures/`，**原始文件绝不进仓库、也不打印到终端**：
 
 ```bash
-U='https://sub.example.invalid/SUBPATH?token=<TOKEN>'
-curl -sS -A 'clash-verge/v2.3.0' --max-time 25 "$U" -o sub-yaml.txt
-curl -sS -A 'curl/8.4' --max-time 25 "$U" -o sub-base64.txt
-printf '<!DOCTYPE html>\n<html><head><title>会员订阅</title></head><body>登录</body></html>' > sub-html.txt
+U='https://<订阅站主机>/<订阅路径>?token=<TOKEN>'   # 真实链接由用户提供，不要写进计划或仓库
+curl -sS -A 'clash-verge/v2.3.0' --max-time 25 "$U" -o "$TEMP/raw-yaml.txt"
+curl -sS -A 'curl/8.4'          --max-time 25 "$U" -o "$TEMP/raw-b64.txt"
+printf '<!DOCTYPE html>\n<html><head><title>会员订阅</title></head><body>登录</body></html>' > test/fixtures/sub-html.txt
 ```
+
+脱敏脚本要做的事（按实测响应结构确定，不要只改 `server:`）：
+
+- 截到 `^rules:` 之前，保证 `proxies:` 与 `proxy-groups:` 两段完整。
+- `server:` → `192.0.2.10`，`password:` → `REDACTED`，`uuid:` → `REDACTED-UUID`，
+  `public-key:` → `REDACTED-PUBKEY`，`short-id:` → `REDACTED-SHORTID`，
+  `servername:`/`sni:` → `example.invalid`。必须同时匹配 **flow 风格** `{ server: x, password: y }`
+  与 block 风格，所以用 `(\b<key>:\s*)[^,}\]\n]*` 而不是行尾匹配。
+- `*nameserver:` 的公共 resolver 列表换成 `[192.0.2.10, 192.0.2.11]`，否则 Step 6 的宽松 grep 会误报。
+- 供应商身份同样不入库：面板域名 → `panel.example.invalid`，订阅品牌名 → `示例订阅`。
+  测试里的 `content-disposition` 用例也随之用 `%E7%A4%BA%E4%BE%8B%E8%AE%A2%E9%98%85`。
+- base64 fixture 由解码后的**假节点**重新编码（`ss://` 用 `REDACTED` 凭据 + `192.0.2.10`），
+  节点名保留以覆盖中文/emoji/竖线等形状。
 
 - [ ] **Step 2: 写失败的测试**
 
@@ -541,19 +554,24 @@ test('parseUserInfo 解析标准头', () => {
 });
 
 test('parseSubscriptionName 解 RFC5987 中文文件名', () => {
-  assert.equal(S.parseSubscriptionName("attachment;filename*=UTF-8''%E5%8D%97%E5%B1%B1%E4%BA%91"), '南山云');
+  assert.equal(S.parseSubscriptionName("attachment;filename*=UTF-8''%E7%A4%BA%E4%BE%8B%E8%AE%A2%E9%98%85"), '示例订阅');
+  assert.equal(S.parseSubscriptionName('attachment;filename=sub.txt'), 'sub.txt');
   assert.equal(S.parseSubscriptionName(undefined), null);
 });
 
 test('yaml 能数出节点数且不含凭据', () => {
   const { yaml, nodes } = S.decodeBody(fx('sub-yaml.txt'), 'yaml');
-  assert.ok(nodes > 0);
   assert.match(yaml, /proxy-groups:/);
+  assert.ok(nodes > 0);
+  // fixture 是 flow 风格（- { name: ... }），且 proxy-groups 也用同一形状：
+  // 计数器只能统计 proxies 段，不能被 proxy-groups 的 name 混入
+  assert.equal(nodes, 15);
 });
 
 test('base64 解出 ss:// 列表并计数', () => {
-  const { nodes } = S.decodeBody(fx('sub-base64.txt'), 'base64');
-  assert.ok(nodes > 0);
+  const { yaml, nodes } = S.decodeBody(fx('sub-base64.txt'), 'base64');
+  assert.equal(yaml, null);
+  assert.equal(nodes, 15);
 });
 
 test('html 判定为格式异常并抛 ApiError', () => {
@@ -620,12 +638,14 @@ function parseSubscriptionName(contentDisposition) {
 function decodeBody(body, format) {
   if (format === 'yaml') {
     const m = /\nproxies:\s*\n([\s\S]*?)(?=\n[a-zA-Z_-]+:|\nproxy-groups:|$)/.exec(body);
-    const nodes = m ? (m[1].match(/^\s*-\s+name:/gm) || []).length : 0;
+    // 机场两种写法都有：`- name: x` 块式与 `- { name: x, ... }` 流式
+    const nodes = m ? (m[1].match(/^\s*-\s*(?:\{\s*)?name:/gm) || []).length : 0;
     return { yaml: body, nodes };
   }
   if (format === 'base64') {
     const decoded = Buffer.from(body.trim().replace(/\s+/g, ''), 'base64').toString('utf8');
-    const nodes = decoded.split(',').map((s) => s.trim()).filter((s) => /:\/\//.test(s)).length;
+    // 真实订阅既有逗号连接的单行，也有换行连接的多行，两者都要数对
+    const nodes = decoded.split(/[,\n]/).map((s) => s.trim()).filter((s) => /:\/\//.test(s)).length;
     if (!nodes) throw new ApiError('subscription_format_unexpected', 'base64 解码后没有可用节点', '订阅可能已过期或链接被重置');
     return { yaml: null, nodes };
   }

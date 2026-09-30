@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 const { redactText, redactUrl } = require('../server/redact');
 
 test('redactUrl 抹掉 token 但保留域名与路径', () => {
-  const out = redactUrl('https://sub.example.invalid/BGqmX0c?token=0123456789abcdef0123456789abcdef');
-  assert.equal(out, 'https://sub.example.invalid/BGqmX0c?token=<redacted>');
+  const out = redactUrl('https://sub.example.invalid/SUBPATH?token=0123456789abcdef0123456789abcdef');
+  assert.equal(out, 'https://sub.example.invalid/SUBPATH?token=<redacted>');
 });
 
 test('redactText 抹掉 token 型 query', () => {
