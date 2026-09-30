@@ -142,3 +142,22 @@ test('discover：config.yaml 缺失时降级到 clash-verge.yaml 并记 warning'
   assert.equal(rt.controller.pipe, '\\\\.\\pipe\\verge-mihomo');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('resolveConfigDir：APPDATA 缺失时从 home 派生 AppData/Roaming，APPDATA 存在时仍以它为准', () => {
+  // Qoder 给插件 MCP 子进程的环境里 APPDATA 是空的（2026-09-30 真机验收 4 实测），
+  // 只认 APPDATA 会让一个装好 CVR 的机器被报成"未检测到 Clash Verge Rev"。
+  const C = D.CONFIG_DIR_NAME;
+  const mkFs = (dirs) => ({ statSync: (p) => ({ isDirectory: () => dirs.includes(p) }) });
+  const roaming = path.join('C:\\Users\\me', 'AppData', 'Roaming', C);
+  assert.equal(D.resolveConfigDir({ USERPROFILE: 'C:\\Users\\me' }, mkFs([roaming])), roaming, 'APPDATA 空时要靠 USERPROFILE 兜底');
+
+  const custom = path.join('D:\\roaming', C);
+  assert.equal(
+    D.resolveConfigDir({ APPDATA: 'D:\\roaming', USERPROFILE: 'C:\\Users\\me' }, mkFs([custom, roaming])),
+    custom, 'APPDATA 有值时不能改查 home，否则用户自定义位置被忽略'
+  );
+
+  const unix = path.join('/home/me', '.config', C);
+  assert.equal(D.resolveConfigDir({ HOME: '/home/me' }, mkFs([unix])), unix, 'POSIX 分支不受影响');
+  assert.equal(D.resolveConfigDir({ HOME: '/home/me' }, mkFs([])), null, '哪里都没有仍是 null');
+});

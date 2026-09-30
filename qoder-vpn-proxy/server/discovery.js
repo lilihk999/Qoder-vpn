@@ -161,12 +161,16 @@ function isDir(fsImpl, p) { try { return Boolean(p) && fsImpl.statSync(p).isDire
 
 function resolveConfigDir(env = process.env, fsImpl = fs) {
   if (env.QVP_CONFIG_DIR && isDir(fsImpl, env.QVP_CONFIG_DIR)) return env.QVP_CONFIG_DIR;
+  const home = env.HOME || env.USERPROFILE || os.homedir();
   const appdata = env.APPDATA || env.appdata;
   if (appdata) {
     const candidate = path.join(appdata, CONFIG_DIR_NAME);
     if (isDir(fsImpl, candidate)) return candidate;
+  } else {
+    // Qoder 拉起的 MCP 子进程环境里没有 APPDATA（2026-09-30 真机验收 4），只认它会把装好 CVR 的机器报成未安装
+    const derived = path.join(home, 'AppData', 'Roaming', CONFIG_DIR_NAME);
+    if (isDir(fsImpl, derived)) return derived;
   }
-  const home = env.HOME || env.USERPROFILE || os.homedir();
   const unix = path.join(home, '.config', CONFIG_DIR_NAME);
   if (isDir(fsImpl, unix)) return unix;
   return null;

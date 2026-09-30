@@ -108,11 +108,68 @@ ProxyOverride = localhost;127.*;192.168.*;10.*;172.16.*;…;<local>
 
 `proxy_test` 真实 `/delay` 扫描：15 个节点里 8 个有延迟数字，坏节点回 `ok:false` + 原因（首轮全 0/15 是**冷启动首拨超时**，同一节点把 timeout 从默认 5000ms 放到 8000ms 后立刻通过 —— 不是链路故障，见下）。
 
-**结论**：**半成品**。"核心关闭时不崩不挂、给出修复提示"这一半已经用真机命令证明（`kind` 是 `channel_unavailable` 而不是 `core_not_running`，两者都在计划 §"proxy_status 例外约定"允许的两态之内，且 hint 直接给出下一步工具）；"17 个工具在 Qoder 里可见"这一半**必须重启 Qoder 才能验证**，见验收 9 一并处理。
+**结论（初测时）**：**半成品**。"核心关闭时不崩不挂、给出修复提示"这一半已经用真机命令证明（`kind` 是 `channel_unavailable` 而不是 `core_not_running`，两者都在计划 §"proxy_status 例外约定"允许的两态之内，且 hint 直接给出下一步工具）；"17 个工具在 Qoder 里可见"这一半**必须重启 Qoder 才能验证**，见验收 9 一并处理。
 
 **遗留问题**：
 1. `proxy_test` 默认 timeout 5000ms 在冷核心上会全员误报超时。已确认是默认值偏紧，本次未改（改动会影响测速语义），记在这里：第一次测速建议显式传 `timeout: 8000`，或先跑一条 `proxy_env`/`proxy_diagnose` 把链路热起来。
-2. 验收 4 的工具可见性未闭环，等用户重启。
+2. ~~验收 4 的工具可见性未闭环，等用户重启~~ → 见下面"重启后补测"，**已闭环**。
+
+### 重启后补测（用户重启 Qoder 之后，同一天的后半程）
+
+重启确实发生了，而且**这一轮才第一次真正暴露出插件在 Qoder 里的样子**。四条证据：
+
+**A. 17 个工具在 Qoder 侧可见（验收 4 的后一半达成）**
+
+```
+mcp_list({keyword:"vpn-proxy"}) → "total": 17
+mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_{status,detect,core_start,core_stop,nodes,select,
+test,env,toolconfig,subscriptions,subscription_add,subscription_edit,subscription_update,
+subscription_activate,subscription_remove,diagnose,restore_config}
+```
+
+`@local` 这个 source 能被加载（spec §8 最后一项一并结），插件的 skill 也出现在技能列表里（`qoder-vpn-proxy:vpn-proxy`）。
+
+**B. 真机调用发现缺陷 5：Qoder 给 MCP 子进程的环境里没有 `APPDATA`**
+
+在会话里直接调 `proxy_status`，回的是：
+
+```
+{"ok":true,"data":{"installed":false,"running":false,"configDir":null,
+ "installDir":"C:\\Program Files\\Clash Verge",
+ "warnings":["未找到配置目录（APPDATA=空 下的 io.github.clash-verge-rev.clash-verge-rev，也没有 QVP_CONFIG_DIR）"],
+ "core":{"reachable":false,"kind":"not_installed","message":"未检测到 Clash Verge Rev 的安装与配置目录"}}}
+$ proxy_nodes {} → {"ok":false,"kind":"not_installed", …}
+```
+
+而这台机器上 CVR **确实装着**：`C:\Users\Administrator\AppData\Roaming\io.github.clash-verge-rev.clash-verge-rev` 完整存在（`config.yaml`/`profiles.yaml`/`verge.yaml` 等），Git Bash 里 `APPDATA` 也有值。**同一段代码在 CLI 环境下 `installed:true`，在 Qoder 拉起的进程里 `installed:false`** —— 原因是 `resolveConfigDir()` 只认 `env.APPDATA`，缺失后直接退到 POSIX 的 `~/.config`，Windows 上必然找不到。`ProgramFiles` 却没被吞（`installDir` 正常解析），所以缺的只有 `APPDATA` 这一个变量。
+
+后果比"看不出来"严重：`proxy_subscriptions`、`proxy_core_start`、`proxy_diagnose`、`proxy_restore_config` 全部会误报未安装；SessionStart hook 更是永远判定"没装 CVR"而永不注入 —— 也就是说验收 9 的"不注入"在修复前是**假阳性**：不是"检测到核心没跑所以不注入"，而是"根本没检测到装着"。
+
+**处置（test-first，缺陷表第 5 条）**：`resolveConfigDir` 在 `APPDATA` 缺失时从 home 派生 `%USERPROFILE%\AppData\Roaming`；`APPDATA` 有值时仍以它为准（用户自定义位置不能被覆盖）；POSIX 分支原样保留。新增 1 条 discovery 测试（四个断言，含"APPDATA 有值时不能改查 home"与"哪里都没有仍是 null"），全套 **160 tests / 0 fail**。
+
+**C. 修复后的端到端复现（用已安装副本 + 剥掉 APPDATA 的子进程）**
+
+```
+spawn …\.qoder\plugins\cache\local\qoder-vpn-proxy\0.1.0\server\index.js | APPDATA in child env: absent
+installed = true
+configDir = C:\Users\Administrator\AppData\Roaming\io.github.clash-verge-rev.clash-verge-rev | source = config.yaml
+warnings  = []
+core      = channel_unavailable | mihomo 控制器不可达（命名管道 \\.\pipe\verge-mihomo: GET /version 连接失败: ENOENT）
+```
+
+这同时是"核心关闭时返回可读错误而不是崩或挂起"的又一条证据：走 JSON-RPC stdio，秒级返回，`proxy_status` 保持 `{ok:true}` + `core.kind`，`proxy_nodes` 保持 `{ok:false}`。
+
+**D. Task 18 的 prune 在真服务端可用**
+
+```
+tools/list 数量 = 17
+proxy_restore_config 参数 = name, listOnly, prune, keepPerName, olderThanDays, dryRun
+prune dryRun => ok: true | scanned: 15 | would delete: 5 | keep: 10 | dryRun flag: true
+```
+
+待删的 5 个都是较早的 `profiles.yaml.*.bak`（`reason:count`），即多余的 token 副本；**只跑了 dryRun，没真删**，等用户点头。
+
+**仍未闭环（诚实的部分）**：本会话正在用的那个 MCP 进程是 **12:38 启动的**（`mcp.log` 最后一行"server 启动"在 12:38:04，而文件同步发生在 13:54），所以**它内存里的 `proxy_restore_config` 还没有 `prune` 参数**，`proxy_status` 也还回 `installed:false` —— 上面 C/D 两条是拿同一份已安装文件另起子进程证明的，不是从当前会话的 MCP 通道拿到的。下一次重启 Qoder 后，会话里才应看到 `prune`。**在此之前不能宣称缺陷 5 已在 Qoder 内闭环。**
 
 ---
 
@@ -259,14 +316,21 @@ assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CV
 手工等价验证（CVR 已停的当前状态）：hook 子进程 stdout 为
 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":""}}`。
 
-**结论**：**代码层达成，Qoder 集成层待重启验证**。hook 脚本在 CVR 未运行时确实输出空串（不注入）；但"重启后新会话开头看不到代理提示 / 启动 CVR 后新会话才出现提示"只能在真实 Qoder 会话里看，而重启会结束当前会话。
+**结论（初测时）**：**代码层达成，Qoder 集成层待重启验证**。hook 脚本在 CVR 未运行时确实输出空串（不注入）；但"重启后新会话开头看不到代理提示 / 启动 CVR 后新会话才出现提示"只能在真实 Qoder 会话里看，而重启会结束当前会话。
 
-**待用户验证的两件事**（与验收 4 的后一半一起）：
-1. 重启 Qoder → 新对话里是否出现 17 个 `mcp__vpn-proxy__*` 工具；核心关闭时调用是否像上面那样秒级返回 `{ok:false, kind:'channel_unavailable', hint:'先 proxy_core_start…'}`。
-2. 重启后 CVR 未运行 → 会话开头**不应**有任何代理 `additionalContext`；手动启动 CVR 后再开新会话 → 应出现"本机代理端口可连通"那段。
-3. 附带验证 spec §8 最后一项：`~/.qoder/plugins/cache/local/` + `installed_plugins_v2.json` 里 `@local` 这个 source 到底能不能被加载。
+**重启后的实测（同一天后半程）**
 
-把用户反馈逐字记进本文档后再定稿。若 hook 没生效，按 `docs/superpowers/probes/02-hooks.md` §4 的顺序查：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 是否 5 秒内退出。
+原列的三件事，逐条对号：
+
+1. **工具可见性 → 达成**。新会话里 17 个工具全在，但**实际前缀是 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__proxy_*`**，不是当初预测的 `mcp__vpn-proxy__*` —— 名字里带了插件 source 与插件名两段。核心关闭时的调用（`proxy_status`、`proxy_nodes`）都是秒级返回的 `{ok:…}` 信封，没有挂起，见验收 4 的补测 C。
+2. **`@local` source 能否加载 → 能**。`installed_plugins_v2.json` 里 `qoder-vpn-proxy@local`（值是**数组**）+ `settings.json` 的 `enabledPlugins` 这一组合被 Qoder 正常识别，插件的 skill 同时出现在技能列表里。spec §8 最后一项就此结掉。
+3. **"CVR 未运行时不注入" → 现象符合，但这条**不能算已证明**，本项仍是开放的。
+
+第 3 条要说清楚为什么不算数。本会话收到的 SessionStart 注入只有环境路由那一段，确实没有任何代理文本；CVR 也确认真的没跑（`tasklist` 无 `clash-verge`/`verge-mihomo`，`netstat` 上 7897/7898/7899 都没监听）。**但缺陷 5 让这个观察失去区分力**：修复前 `resolveConfigDir` 在 Qoder 的子进程环境里拿不到 `APPDATA`，hook 里的 discovery 会一路退到"这台机器没装 CVR"，于是**无论 CVR 跑没跑都必然输出空串**。观测到的现象和"设计正确"之间断了一环 —— 这是假阳性，不是验证。
+
+要真正把验收 9 结掉，需要两步（都要用户配合）：① **再重启一次 Qoder**，让新代码进入 hook 与 MCP 进程；② 开着 CVR 触发一次 SessionStart（新会话，或 `/clear`、`/compact` —— matcher 是 `startup|resume|clear|compact`），确认注入出现"本机代理端口可连通"那段；然后再停掉 CVR 复看一次不注入。在①之前，"不注入"这个观察无论重复多少次都不构成证据。
+
+若 hook 压根没被调用，按 `docs/superpowers/probes/02-hooks.md` §4 的顺序查：`hooks.json` 是否被读到 → `run-hook.cmd` 在 bash 下能否跑通 `node server/session-start.js` → 是否 5 秒内退出。
 
 ---
 
@@ -285,7 +349,7 @@ assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CV
 
 ---
 
-## 本轮真机跑出来的 4 个缺陷（都是"测试替身没像真机"这一类）
+## 本轮真机跑出来的 5 个缺陷（前 4 个同源：测试替身没像真机；第 5 个：宿主环境没像开发 shell）
 
 | 缺陷 | 触发方式 | 修复 |
 |---|---|---|
@@ -293,8 +357,9 @@ assert.equal(msg.hookSpecificOutput.additionalContext, '', '验收 9：没装 CV
 | curl 失败行 `%{remote_ip}` 是空串 → `parseCurlOut` 整行不匹配，耗时一起丢 | `proxy_diagnose` 的 `direct.totalMs:null` | `diagnose.js` 第 4 段改可选 `(?:\s+(\S+))?`，`remoteIp: m[4] ?? null` |
 | 备份按字典序排 → `restore` 挑到过期那份（目录里混了两种时间戳格式） | `listBackups` 打印的"最新"其实不是最新 | `cvr-config.js` + `store.js` 改按 `mtimeMs` 排，名字作 tiebreak；测试用 `utimesSync` 钉 mtime 复现 |
 | `stop()` 连 `profiles.yaml` 一起回滚 → 撤销用户刚激活的订阅；`activate` 因 reload 404 被误报失败 | `proxy_core_stop` 后当前订阅变回旧的那条 | `stop` 收窄到 `SESSION_RESTORE_NAMES=['verge.yaml']`；`activate` 改回 `{reloaded, needsRestart, note}` 如实上报 |
+| **（第 5 个，类别不同）Qoder 拉起的 MCP/hook 子进程没有 `APPDATA`** → `resolveConfigDir` 退到 `~/.config`，装着 CVR 的机器被报成未安装，hook 永不注入 | 会话内调 `proxy_status` 回 `installed:false` + `warnings:["…APPDATA=空…"]`，而同一段代码在 CLI 下回 `installed:true` | `discovery.js` 在 `APPDATA` 缺失时从 home 派生 `AppData/Roaming`（有 `APPDATA` 时仍以它为准）。前 4 个是"测试替身不像真机"，这一个是**"宿主环境不像开发 shell"** —— 单测与 CLI 手测都摸不到，只有真在 Qoder 里调用才暴露 |
 
-每一个都先写红测试、改代码、再跑全量（147 → 148 → 150 → 152 → 153 → **154**，`# fail 0`），并且**同时把 fake 改成和真机一样**——否则同类 bug 下次还会从 fake 的缝里钻出来。
+前 4 个都先写红测试、改代码、再跑全量（147 → 148 → 150 → 152 → 153 → **154**，`# fail 0`），并且**同时把 fake 改成和真机一样**——否则同类 bug 下次还会从 fake 的缝里钻出来。第 5 个在重启后补测时发现，红测试 + 修复后全量 **160 / 0 fail**（中间加 Task 18 的 prune 5 条：154 → 159 → 160）。
 
 ---
 
@@ -323,9 +388,9 @@ cmp server/*.js test/*.js README.md skills/vpn-proxy/SKILL.md .qoder-plugin/plug
 
 ## 未闭环清单
 
-1. 验收 4 / 9 的 Qoder 集成层（工具可见性、hook 是否真注入、`@local` source 能否加载）—— 等用户重启。
+1. ~~验收 4 的 Qoder 集成层~~ —— **已闭环**：重启后工具可见性 17/17、`@local` source 加载成功，实测还揪出缺陷 5（见"重启后补测"）。**验收 9 仍未闭环**：两条原因，一是缺陷 5 让"核心关闭 ⇒ 不注入"的观测成了假阳性，二是本会话的 MCP 进程启动于 12:38、文件同步在 13:54，服务端仍是旧代码，`prune` 与新发现逻辑要**再重启一次 Qoder** 才在会话内生效。
 2. `proxy_test` 默认 5000ms timeout 在冷核心上误报 —— 已记录，未改。
 3. ~~`backups/profiles.yaml.*` 含原始 token，无保留期策略~~ —— **已由用户决定并实现（①，计划 Task 18）**：`proxy_restore_config prune=true`。残留局限见上面"后记"。
-4. CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值 —— 用户收尾时提了这条（②），但**措辞是"值否清掉"，读不出是"是否要清"还是在指示"清掉"**；插件按前提从不写注册表，删除它属于对用户机器的不可逆改动，必须先确认语义再动手。当前状态：`ProxyEnable=0x0`，两值惰性。
+4. ~~CVR 遗留的 `ProxyServer`/`ProxyOverride` 注册表值~~ —— **用户已定（②追问后）："注册表不要清掉"**。两个值保持现状、插件与用户都不动它们；这与"插件从不写注册表"的前提一致，也意味着本次收尾未产生任何对用户机器的不可逆改动。当前状态：`ProxyEnable=0x0`，两值惰性（系统代理仍关闭，浏览器/游戏不受影响）。
 5. ~~"Qoder 模型请求要不要走代理"仍未回答~~ —— **用户已定（③）：不走**。已写进 SKILL.md 边界与 spec §8。
 6. **推送前的新增阻塞（本次核查发现，比上面几条都严重）**：spec §2 曾把订阅 URL 的完整路径段写进事实表，计划里 `redactUrl('…?token=<完整 token>')` 那行测试样例曾带**完整 32 位 token**。逐提交扫描全部 31 个提交把范围钉准：**6 个提交的树里仍带完整 token** —— master 的 `ecd10fd`/`d75f7e8`/`37b1d6c`/`0f8410a` 加分支早期的 `c9fdb9e`/`7673dd0`；分支从 `9957740`（Task 5）起树里已无真 token，**tip 干净**（HEAD 全仓只剩合成 fixture `token=0123…`，计划与本文档只剩 8 字符 grep 前缀）。但 PR 的 base 必须是 master，分支自身历史也带着那 6 个 blob，所以"只推 feature 分支"同样会泄露。本仓库至今 `git remote -v` 为空、`gh` 不在 PATH，所以尚未有任何内容外泄 —— 属可避免，不是已发生。可选处置：① 机场面板先轮换 token（最彻底；轮换后计划与本文档里那四个 8 字符 grep 前缀要一起更新）；② 重写那 6 个提交里对应的行（目前没有 remote，重写成本极低，但属破坏性 git 操作，需显式同意）；③ **推一份不含历史的干净快照**：从当前 tip 建 orphan 分支作为 base + 工作分支，公开的任何 blob 里都不含秘密，代价是丢掉逐任务的提交粒度；④ 暂不推。未选定前**不执行任何 push**；选定后还需要用户给出 remote URL 与仓库可见性（公开/私有），且 `gh` 缺失意味着 PR 只能用 API token 或网页手工创建。

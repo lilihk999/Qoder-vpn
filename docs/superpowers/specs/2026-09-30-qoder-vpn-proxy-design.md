@@ -288,7 +288,8 @@ Transport = {
 
 仍未验证 / 未闭环：
 
-- `@local` 插件 source 能否被 Qoder 加载、17 个工具在重启后是否可见、SessionStart hook 是否真的只在 CVR 运行时注入 —— 三条都要重启 Qoder 才能看，见验收文档 §验收 4 / §验收 9。
+- ~~`@local` 插件 source 能否被 Qoder 加载、17 个工具在重启后是否可见~~ → **已闭环**：重启后 `@local` source 加载成功，`mcp_list` 报 17 个 `mcp__plugin_qoder-vpn-proxy_vpn-proxy__*` 工具。**但同一次实测发现新缺陷**：Qoder 拉起的 MCP 子进程环境里**没有 `APPDATA`**，而 `resolveConfigDir` 只认这个变量，于是真机上的 CVR 被报成 `installed:false / configDir:null` —— 已按 TDD 修成"缺 `APPDATA` 时从 `HOME`/`USERPROFILE` 派生 `AppData\Roaming`"（计划 Task 18 后追加，全量 160/160）。
+- SessionStart hook 是否真的只在 CVR 运行时注入 —— **验收 9 仍未闭环**，原因正是上一条：`APPDATA` 缺失使"CVR 未运行"的负向观测成为**假阳性**（它其实是"根本没找到 CVR"）。闭环步骤见验收文档 §验收 9：需**再一次重启**（本会话的 MCP 进程早于修复代码同步，服务端仍是旧实现），然后 启动 CVR → 触发 SessionStart → 期望注入；再停核心复测负向分支。
 - ~~插件的 `backups/profiles.yaml.*` 必然含原始订阅 token（那是 CVR 工作文件的逐字节副本），目前无保留期策略~~ → **已加保留期清理（计划 Task 18）**：`proxy_restore_config prune=true` 按"每个文件名留 5 份 / 超 14 天删 / 最新一份永远留"清理，`dryRun` 可先看清单。局限：清理**不自动触发**（备份写入层用注入的假 `fs`，prune 用真 `fs.unlinkSync`），所以 SKILL.md 要求每次动过配置的流程结束时跑一次。
-- CVR 自己写入的注册表值 `ProxyServer`/`ProxyOverride`（基线里没有）仍留在机器上；因 `ProxyEnable=0` 而惰性，清除它需要用户同意。
+- CVR 自己写入的注册表值 `ProxyServer`/`ProxyOverride`（基线里没有）留在机器上 —— **用户已定：不清（②）**。因 `ProxyEnable=0` 而惰性，且插件按本设计前提从不写注册表，收尾不产生任何对用户机器的不可逆改动。
 
