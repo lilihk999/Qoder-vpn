@@ -27,7 +27,7 @@
 | `proxy_status` | 现状一页纸：是否安装/在跑、通道（管道还是 TCP）、mixed 端口、模式、当前节点、订阅余量、系统代理与 TUN 开关（只读展示）。核心没跑也回 `ok:true`，不可达原因在 `data.core` |
 | `proxy_detect` | 解析出的端口 + 常见端口逐个 TCP 握手，列出哪些真能连 |
 | `proxy_core_start` | 启动 CVR。`scope=session`（默认）先备份 `verge.yaml` 再压制系统代理与 proxy guard；`scope=global` 保留用户自己的设置。需要开外部控制时传 `enableExternalControl=true`（**先征得用户同意**） |
-| `proxy_core_stop` | 结束 `clash-verge.exe` / `verge-mihomo.exe` |
+| `proxy_core_stop` | 结束 `clash-verge.exe` / `verge-mihomo.exe`；`restore:true`（默认）只把 `verge.yaml` 的系统代理压制还原回去，**不会**撤销你已经切换/新增的订阅 |
 | `proxy_nodes` | 列策略组与组内**节点名**，含当前选中项 |
 | `proxy_select` | 切节点或切模式（`rule` / `global` / `direct`），切完回读确认生效 |
 | `proxy_test` | 对节点跑真实 `/delay` 测速，串行执行，按延迟升序返回，坏节点标 `ok:false` 与原因 |
@@ -37,7 +37,7 @@
 | `proxy_subscription_add` | 加一条订阅（Clash 家族 UA 抓取，校验返回必须是 YAML/base64 节点而非 HTML 登录页；写后立即重读校验，不一致回滚） |
 | `proxy_subscription_edit` | 改订阅：换 url（token 轮换 / 换域名）、改名、备注、自动更新策略。**自定义名称在更新后保留** |
 | `proxy_subscription_update` | 重新抓取刷新：传 `uid` 更单条，`all=true` 批量 |
-| `proxy_subscription_activate` | 切换激活订阅：写 `profiles.yaml` 的 `current`、让 mihomo reload、回读实际生效的组与节点 |
+| `proxy_subscription_activate` | 切换激活订阅：写 `profiles.yaml` 的 `current` 并回读确认。mihomo v1.19.25 **没有** reload 端点，所以返回里 `needsRestart: true` 表示还要 `proxy_core_stop` + `proxy_core_start`（或在 GUI 点一下该订阅）才真正加载新节点 |
 | `proxy_subscription_remove` | 删除订阅：移除注册项，内容文件移入插件回收目录 `.trash`（可撤销，不硬删） |
 | `proxy_diagnose` | 对 GitHub / npm / PyPI / Qoder 等地址，同一时刻各跑一轮"直连"与"经代理"的 curl（直连轮强制 `--noproxy '*'`，不被环境变量污染），给出该不该走代理的结论 |
 | `proxy_restore_config` | 列出插件做过的全部带时间戳备份并还原 |
