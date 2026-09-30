@@ -1018,19 +1018,22 @@ test('非 2xx 不抛异常，只回状态码', async () => {
 });
 
 test('两条通道都不通 -> channel_unavailable，消息含两次尝试原因', async () => {
-  const fake = await startFake({ pipeName: 'qvp-t7-d', port: 0, secret: 's3cret' });
-  const dead = fake.port + 1000;
+  const fake = await startFake({ pipeName: 'qvp-t7-d', port: 0, secret: 's3cret', tcpEnabled: true });
+  // 关掉 fake 后用它刚释放的端口当"死端口"：确定是 ECONNREFUSED。
+  // 不要写 fake.port + 1000 —— 临时端口接近 65535 时会被 parseTarget 判非法，
+  // attempts 里就没有 TCP 那条，测试变成偶发失败。
+  const deadPort = fake.port;
   await fake.close();
   await assert.rejects(
     T.createTransport(
       {
         secret: 's3cret',
-        controller: { pipe: '\\\\.\\pipe\\qvp-does-not-exist', tcp: `127.0.0.1:${dead}` },
+        controller: { pipe: '\\\\.\\pipe\\qvp-does-not-exist', tcp: `127.0.0.1:${deadPort}` },
         channelHint: '开外部控制',
       },
       { timeoutMs: 1500 }
     ),
-    (e) => e.kind === 'channel_unavailable' && /pipe/.test(e.message) && /tcp/.test(e.message) && e.hint === '开外部控制'
+    (e) => e.kind === 'channel_unavailable' && /pipe/.test(e.message) && /tcp/i.test(e.message) && e.hint === '开外部控制'
   );
 });
 
@@ -1091,8 +1094,17 @@ function parseTarget(target) {
   return { host, port };
 }
 
+// Node 的 ClientRequest 拒绝 path 里的非 ASCII（ERR_UNESCAPED_CHARACTERS），而 mihomo 的
+// 组名/节点名经常就是中文。已编码的 %XX 不在替换范围内，所以对同一字符串重复调用是安全的。
+function encodePath(p) {
+  return String(p).replace(/[^\x21-\x7E]+/g, encodeURIComponent);
+}
+
 function authHeaders(secret, extra = {}) {
   const h = { Host: 'localhost', Accept: 'application/json', ...extra };
+  if (secret) h.Authorization = `Bearer ${secret}`;
+  return h;
+}
   if (secret) h.Authorization = `Bearer ${secret}`;
   return h;
 }
@@ -1108,7 +1120,7 @@ function send(connectOpts, method, path, { body, headers = {}, timeoutMs = DEFAU
       finalHeaders['Content-Length'] = Buffer.byteLength(payload);
     }
     const req = http.request(
-      { ...connectOpts, method, path, headers: finalHeaders, timeout: timeoutMs, agent: false },
+      { ...connectOpts, method, path: encodePath(path), headers: finalHeaders, timeout: timeoutMs, agent: false },
       (res) => {
         let text = '';
         res.setEncoding('utf8');
@@ -1219,6 +1231,11 @@ module.exports = { DEFAULT_TIMEOUT_MS, parseTarget, PipeTransport, TcpTransport,
 
 Run: `node --test test/transport.test.js`
 Expected: PASS（8 个测试）。"TCP 兜底"那条传的是 `controller: {pipe: null, ...}`，`ORDER` 的 pipe 分支见 `!controller.pipe` 会 `continue` —— 不要改成传一个不存在的管道名，那样测的是错误分支。
+
+最后一条 `PUT /proxies/节点选择` 传的是**未编码**的中文：`http.request` 对这种 path 直接抛
+`ERR_UNESCAPED_CHARACTERS`（同步、在 Promise executor 里），所以 `send()` 必须过一层
+`encodePath()`。编码放在 `send()` 这个唯一出口，Task 9 的调用方就不用各自记得转义；
+而"非 2xx"那条传的是已编码路径，`encodePath` 对 `%XX` 不动，两种写法都能通。
 
 - [ ] **Step 5: 全量测试与提交**
 
