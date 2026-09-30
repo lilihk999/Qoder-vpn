@@ -238,7 +238,9 @@ test('modifiedSinceBackup：改过报脏，还原后即便备份仍在也不报�
     configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
     exePath: exe(dir), fsImpl: fs,
   });
-  assert.deepEqual(cvr.modifiedSinceBackup().modified, [], '没备份过 -> 无从判断，报干净');
+  assert.deepEqual(cvr.modifiedSinceBackup().modified, []);
+  assert.deepEqual(cvr.modifiedSinceBackup().noBackup.sort(), ['profiles.yaml', 'verge.yaml'],
+    '一个插件备份都没有时，报的是"无从判断"，不能报成"和基线一致"');
   await cvr.backup();
   assert.deepEqual(cvr.modifiedSinceBackup().modified, [], '刚备份、内容一致 -> 干净');
   await cvr.suppressSystemProxy();
@@ -247,6 +249,34 @@ test('modifiedSinceBackup：改过报脏，还原后即便备份仍在也不报�
   await cvr.restore();
   assert.deepEqual(cvr.modifiedSinceBackup().modified, [], '还原后回到干净，而不是因备份存在而永远报脏');
   assert.ok(cvr.listBackups().length > 0, '备份文件没被删，只是不再算作"当前改过"');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('modifiedSinceBackup 返回三态：脏 / 干净 / 无可比备份', async () => {
+  const dir = mkSandbox('drift-shape');
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
+    exePath: exe(dir), fsImpl: fs,
+  });
+  await cvr.backup();
+  fs.writeFileSync(path.join(dir, 'config', 'profiles.yaml'), '# 用户手改\n');
+  const r = cvr.modifiedSinceBackup();
+  assert.deepEqual(r.modified.map((m) => m.name), ['profiles.yaml']);
+  assert.deepEqual(r.clean, ['verge.yaml'], '干净的那个要能被点名，否则 proxy_status 无法说"另一个没问题"');
+  assert.equal(typeof r.modified[0].backupTs, 'string', '报脏要带它是在跟哪一份备份比');
+  // 备份目录被清空 -> 两个文件都退化成"无从判断"
+  for (const b of cvr.listBackups()) fs.unlinkSync(b.backupPath);
+  const gone = cvr.modifiedSinceBackup();
+  assert.deepEqual(gone.modified, []);
+  assert.deepEqual(gone.clean, []);
+  assert.deepEqual(gone.noBackup.sort(), ['profiles.yaml', 'verge.yaml']);
+  // 配置文件整个不见了：这是最严重的一种偏离，不能算"没得比"
+  await cvr.backup();
+  fs.unlinkSync(path.join(dir, 'config', 'verge.yaml'));
+  const missing = cvr.modifiedSinceBackup();
+  assert.deepEqual(missing.modified.map((m) => m.name), ['verge.yaml']);
+  assert.equal(missing.modified[0].missing, true, '要能和"内容不同"区分开：文件不见了不该建议 diff，该建议还原');
+  assert.deepEqual(missing.clean, ['profiles.yaml']);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

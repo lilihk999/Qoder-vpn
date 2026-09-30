@@ -91,6 +91,33 @@ function subscriptionSummary(repoEntry) {
   };
 }
 
+const DRIFT_NAMES = ['verge.yaml', 'profiles.yaml'];
+const DRIFT_NOTE = 'dirty 只说明当前字节与插件最近一次备份不同，看不出是谁改的：插件的 core_start/订阅写入会改，'
+  + 'CVR 自己在运行中也会回写（真机实测 profiles.yaml 的元数据就是这样），用户手改同样算进来。'
+  + '要撤销用 proxy_restore_config；noBackup 里的文件是"没得比"，不等于"没问题"。';
+
+/** 把 CvrConfig.modifiedSinceBackup 的三态整理成能自解释的一块输出；读不到就明说读不到。 */
+function configDriftOf(cvr) {
+  if (!cvr) {
+    return { available: false, dirty: [], clean: [], noBackup: DRIFT_NAMES, note: '没有 CVR 配置目录，配置状态无法判断 —— 这不是"干净"。' };
+  }
+  try {
+    const { modified = [], clean = [], noBackup = [] } = cvr.modifiedSinceBackup();
+    return {
+      available: true,
+      comparedTo: `插件对每个配置文件最近一次落盘的时间戳备份（${DRIFT_NAMES.join(' / ')}）`,
+      dirty: modified.map((m) => m.name),
+      files: modified,
+      clean,
+      noBackup,
+      note: DRIFT_NOTE,
+    };
+  } catch (e) {
+    const env = toEnvelope(e);
+    return { available: false, error: env.kind, dirty: [], clean: [], noBackup: [], note: `备份读不到（${env.kind}），配置状态无法判断 —— 这不是"干净"。` };
+  }
+}
+
 function groupOrThrow(groups, nodes, group) {
   const hit = groups.find((g) => g.name === group);
   if (!hit) throw new ApiError('malformed_config', `没有名为 ${redactText(String(group))} 的代理组`, `可选：${groups.map((g) => g.name).join(' / ')}`);
@@ -101,7 +128,7 @@ function buildTools(deps) {
   return [
     {
       name: 'proxy_status',
-      description: '查看本机代理现状：Clash Verge 是否在运行、控制通道走命名管道还是 TCP、mixed 端口、运行模式、当前节点与订阅余量、系统代理与 TUN 状态（只读展示，绝不改动）、插件是否改过配置文件。核心未运行时也返回成功，不可达原因在 data.core 里。',
+      description: '查看本机代理现状：Clash Verge 是否在运行、控制通道走命名管道还是 TCP、mixed 端口、运行模式、当前节点与订阅余量、系统代理与 TUN 状态（只读展示，绝不改动），以及 configDrift —— 当前 verge.yaml/profiles.yaml 与插件最近一次时间戳备份的三态对照（dirty / clean / noBackup）。核心未运行时也返回成功，不可达原因在 data.core 里。',
       inputSchema: obj(),
       handler: async () => {
         const rt = await deps.getRuntime();
@@ -138,8 +165,10 @@ function buildTools(deps) {
         }
         try {
           const cvr = await deps.getCvr();
-          out.configModified = cvr ? cvr.modifiedSinceBackup().modified : [];
-        } catch { out.configModified = []; }
+          out.configDrift = configDriftOf(cvr);
+        } catch (e) {
+          out.configDrift = { available: false, error: toEnvelope(e).kind, dirty: [], clean: [], noBackup: DRIFT_NAMES, note: 'CVR 配置层读不到，配置状态无法判断 —— 这不是"干净"。' };
+        }
         return ok(out);
       },
     },
@@ -427,7 +456,18 @@ function buildTools(deps) {
         }
         const names = a.name ? [a.name] : ['verge.yaml', 'profiles.yaml'];
         const r = await cvr.restore(names);
-        return ok({ backups, restored: r.restored, skipped: names.filter((n) => !r.restored.some((x) => x.name === n)) });
+        const driftAfterRestore = configDriftOf(cvr);
+        const warnings = [];
+        if (r.restored.length && driftAfterRestore.dirty.length) {
+          warnings.push(`已还原 ${r.restored.map((x) => x.name).join('、')}，但复查时 ${driftAfterRestore.dirty.join('、')} 又不一致：极可能是 CVR 正在运行时把它写回了（还原本身是成功的，写入前逐字节对照过备份）。要么接受 —— CVR 运行时需要这些值；要么先 proxy_core_stop 再还原一次。`);
+        }
+        return ok({
+          backups,
+          restored: r.restored,
+          skipped: names.filter((n) => !r.restored.some((x) => x.name === n)),
+          driftAfterRestore,
+          warnings,
+        });
       },
     },
   ];

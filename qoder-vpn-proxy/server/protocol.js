@@ -12,6 +12,7 @@ const INSTRUCTIONS = [
   '订阅可自主维护：proxy_subscriptions 列清单，add/edit/update/activate/remove 管理，edit 用于机场换地址或轮换 token。',
   '代理端口一律来自返回值，不要凭记忆写 7897。',
   '订阅地址是凭据：工具输出与日志里主机名、路径段、token 全部掩掉，只剩结构与 urlFingerprint；原始链接只在插件内部用于抓取与写 profiles.yaml。',
+  '读结果别过头：proxy_diagnose 里 2xx 配 curl exit 28 是"通但被 max-time 截断"，该调大 timeoutMs 重跑，不是换节点；proxy_status 的 configDrift.dirty 只说明字节与最近一次插件备份不同，看不出是插件、CVR 还是用户改的。',
 ].join(' ');
 
 function framer() {
