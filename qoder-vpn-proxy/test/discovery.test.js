@@ -100,7 +100,27 @@ test('discover：目录不存在时 installed:false 且 hint 可执行', async (
   assert.ok(rt.warnings.length > 0, '配置目录找不到时必须留 warning，否则调用方看不出为什么失败');
 });
 
-test('discover：真实形态沙箱组装 Runtime', async () => {
+test('discover：clash-verge.yaml 与 config.yaml 同时存在时取前者', async () => {
+  // CVR 的 config.yaml 是"用户基座配置"，mihomo 真正加载的是生成出来的 clash-verge.yaml。
+  // 真机 2026-10-01：基座里还是旧管道名 \\.\pipe\verge-mihomo，运行时已变成
+  // …-sidecar-release-<64hex>（Sidecar 模式），按基座连必然 ENOENT —— 核心在跑、7897 在监听，
+  // 插件却报通道不可达，于是 proxy_core_start 说"25000ms 内未就绪"却已经把进程拉起来了。
+  const dir = sandbox('sandbox-task8c');
+  fs.rmSync(dir, { recursive: true, force: true });
+  const appdata = path.join(dir, 'Roaming', D.CONFIG_DIR_NAME);
+  fs.mkdirSync(appdata, { recursive: true });
+  fs.writeFileSync(path.join(appdata, 'config.yaml'), fx('cvr-config.yaml'));
+  fs.writeFileSync(path.join(appdata, 'clash-verge.yaml'),
+    `mixed-port: 7897\nmode: global\nexternal-controller: ''\nexternal-controller-pipe: ${String.raw`\\.\pipe\verge-mihomo-sidecar-release-abc`}\nsecret: runtime-only-secret\n`);
+  fs.writeFileSync(path.join(appdata, 'verge.yaml'), fx('cvr-verge.yaml'));
+  const rt = await D.discover({ env: { APPDATA: path.join(dir, 'Roaming') }, exec: async () => ({ stdout: '信息: 没有运行的任务\n' }) });
+  assert.equal(rt.configSource, 'clash-verge.yaml');
+  assert.equal(rt.controller.pipe, String.raw`\\.\pipe\verge-mihomo-sidecar-release-abc`);
+  assert.equal(rt.secret, 'runtime-only-secret', 'secret 也须来自运行时文件：拿基座的旧密钥连新管道只会 401');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('discover：只有基座 config.yaml 时用它兜底并组装 Runtime', async () => {
   const dir = sandbox('sandbox-task8');
   fs.rmSync(dir, { recursive: true, force: true });
   const appdata = path.join(dir, 'Roaming', D.CONFIG_DIR_NAME);
@@ -128,7 +148,7 @@ test('discover：真实形态沙箱组装 Runtime', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('discover：config.yaml 缺失时降级到 clash-verge.yaml 并记 warning', async () => {
+test('discover：只有 clash-verge.yaml（首选源）时用它，verge.yaml 缺失记 warning', async () => {
   const dir = sandbox('sandbox-task8b');
   fs.rmSync(dir, { recursive: true, force: true });
   const appdata = path.join(dir, 'Roaming', D.CONFIG_DIR_NAME);
