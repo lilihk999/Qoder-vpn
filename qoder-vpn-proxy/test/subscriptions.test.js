@@ -2,8 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const T = require('./tmp');
 const store = require('../server/store');
 const P = require('../server/profilesYaml');
 const { SubscriptionRepo } = require('../server/subscriptions');
@@ -29,7 +29,7 @@ const fetchImpl = async (url) => {
 };
 
 function sandbox(t) {
-  const dir = path.join(os.tmpdir(), `qvp-sub-${t}-${process.pid}`);
+  const dir = T.tmpDir(`sub-${t}`);
   fs.rmSync(dir, { recursive: true, force: true });
   const configDir = path.join(dir, 'cvr');
   fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });
@@ -236,7 +236,7 @@ test('activate 写 current、reload 并回读组确认', async () => {
 test('核心没有 reload 端点时 activate 仍算成功，但必须明说要重启', async () => {
   // 真机 v1.19.25：POST /configs/reload -> 404。注册表已经写对，
   // 把它当失败会让调用方以为切换没发生，从而重复点击或回滚。
-  const dir = path.join(os.tmpdir(), `qvp-sub-noreload-${process.pid}`);
+  const dir = T.tmpDir('sub-noreload');
   fs.rmSync(dir, { recursive: true, force: true });
   const configDir = path.join(dir, 'cvr');
   fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });

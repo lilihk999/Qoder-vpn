@@ -4,15 +4,15 @@ const { test } = require('node:test');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
-const os = require('node:os');
 const path = require('node:path');
+const T = require('./tmp');
 
 const HOOK = path.join(__dirname, '..', 'server', 'session-start.js');
 const LAUNCHER = path.join(__dirname, '..', 'hooks', 'run-hook.cmd');
 
 /** 沙箱里造一个"装了 CVR 且 runtime 端口写在 config.yaml"的配置目录 */
 function sandbox({ mixedPort }) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-hook-'));
+  const root = T.mkTmp('hook');
   const configDir = path.join(root, 'clash-verge');
   const installDir = path.join(root, 'program');
   fs.mkdirSync(configDir, { recursive: true });
@@ -59,7 +59,7 @@ async function occupy() {
 }
 
 test('hook 契约：stdout 永远是单个带 hookEventName 的 JSON 对象，未安装时 additionalContext 为空串', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-hook-bare-'));
+  const root = T.mkTmp('hook-bare');
   const env = {
     ...process.env,
     APPDATA: root,

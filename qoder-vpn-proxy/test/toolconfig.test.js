@@ -2,8 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const T = require('./tmp');
 const TC = require('../server/toolconfig');
 
 const USER_NPMRC = 'registry=https://registry.npmmirror.com\n//registry.npmjs.org/:_authToken=abc\nfund=false\n';
@@ -30,7 +30,7 @@ function mkGit(initial = {}) {
 }
 
 function mk(t, content = USER_NPMRC) {
-  const dir = path.join(os.tmpdir(), `qvp-tc-${t}-${process.pid}`);
+  const dir = T.tmpDir(`tc-${t}`);
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(path.join(dir, 'backups'), { recursive: true });
   const npmrc = path.join(dir, '.npmrc');
@@ -154,7 +154,7 @@ test('status 能发现 git 值与期望端口不一致（partial）', async () =
 });
 
 test('git 步骤失败时 npmrc 回滚，不留半改', async () => {
-  const dir = path.join(os.tmpdir(), `qvp-tc-gitfail-${process.pid}`);
+  const dir = T.tmpDir('tc-gitfail');
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(path.join(dir, 'backups'), { recursive: true });
   const npmrc = path.join(dir, '.npmrc');
@@ -171,7 +171,7 @@ test('git 步骤失败时 npmrc 回滚，不留半改', async () => {
 });
 
 test('npmrc 不存在时 apply 会创建，revert 后留空文件而不是删掉用户目录里的项', async () => {
-  const dir = path.join(os.tmpdir(), `qvp-tc-missing-${process.pid}`);
+  const dir = T.tmpDir('tc-missing');
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   const npmrc = path.join(dir, '.npmrc');

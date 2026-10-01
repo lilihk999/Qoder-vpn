@@ -4,5 +4,5 @@
   "private": true,
   "type": "commonjs",
   "description": "识别并使用本机 Clash Verge Rev 代理的 Qoder 插件",
-  "scripts": { "test": "node --test" }
+  "scripts": { "test": "node --test \"test/*.test.js\"" }
 }

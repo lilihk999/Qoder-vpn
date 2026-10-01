@@ -5,8 +5,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const S = require('../server/store');
+const T = require('./tmp');
 
-const tmp = (n) => path.join(os.tmpdir(), `qvp-store-${n}-${process.pid}`);
+const tmp = (n) => T.tmpDir(`store-${n}`);
 
 test('dataDir 默认在 ~/.qoder/vpn-proxy，可用环境变量覆盖', () => {
   assert.equal(S.dataDir({ HOME: '/home/u' }), path.join(os.homedir(), '.qoder', 'vpn-proxy'));
