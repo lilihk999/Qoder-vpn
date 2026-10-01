@@ -11,7 +11,11 @@ const execFileAsync = promisify(execFile);
 const CONFIG_DIR_NAME = 'io.github.clash-verge-rev.clash-verge-rev';
 const FALLBACK_PIPE = '\\\\.\\pipe\\verge-mihomo';
 const DEFAULT_SECRET = 'set-your-secret';
-const CONFIG_SOURCES = ['config.yaml', 'clash-verge.yaml', 'clash-verge-check.yaml'];
+// 顺序即优先级：clash-verge.yaml 是 CVR 每次启动核心时生成的**运行时配置**，mihomo 加载的就是它；
+// config.yaml 只是用户基座，可能停在几个月前（真机 2026-10-01：基座写 \\.\pipe\verge-mihomo，
+// 运行时已是 \\.\pipe\verge-mihomo-sidecar-release-<64hex>，按基座连必 ENOENT）。
+// 排第一的那个文件解析失败时会继续往下退，所以基座仍是坏运行时配置的兜底。
+const CONFIG_SOURCES = ['clash-verge.yaml', 'config.yaml', 'clash-verge-check.yaml'];
 
 function installCandidates(env) {
   // 显式给定候选时只用给定值：测试必须与"这台机器装没装 CVR"无关
