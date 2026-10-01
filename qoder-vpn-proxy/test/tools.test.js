@@ -2,8 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const T = require('./tmp');
 const { buildTools, callTool, TOOL_NAMES } = require('../server/tools');
 const { ApiError } = require('../server/envelope');
 const { startFake } = require('./fake-mihomo');
@@ -197,7 +197,7 @@ test('输出全过脱敏：订阅 token 与节点地址不出现', async () => {
 });
 
 test('输出面审计：真订阅仓库下三条工具路径都不带订阅主机名与路径段', async () => {
-  const dir = path.join(os.tmpdir(), `qvp-mask-${process.pid}`);
+  const dir = T.tmpDir('mask');
   fs.rmSync(dir, { recursive: true, force: true });
   const configDir = path.join(dir, 'cvr');
   fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });
@@ -239,7 +239,7 @@ test('输出面审计：真订阅仓库下三条工具路径都不带订阅主�
 
 test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', async () => {
   const fake = await startFake({ pipeName: 'qvp-t15-e2e', port: 0, secret: 'set-your-secret' });
-  const dir = path.join(os.tmpdir(), `qvp-t15-${process.pid}`);
+  const dir = T.tmpDir('t15');
   fs.rmSync(dir, { recursive: true, force: true });
   const configDir = path.join(dir, 'cvr');
   fs.mkdirSync(path.join(configDir, 'profiles'), { recursive: true });
@@ -289,7 +289,7 @@ test('全链路：fake-mihomo + 沙箱 profiles 跑 nodes/select/test/status', a
 });
 
 test('proxy_restore_config prune 走保留期清理，dryRun 一支真不删', async () => {
-  const dir = path.join(os.tmpdir(), `qvp-prune-tools-${process.pid}`);
+  const dir = T.tmpDir('prune-tools');
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   const now = Date.UTC(2026, 8, 30, 12);
@@ -317,7 +317,7 @@ test('proxy_restore_config prune 走保留期清理，dryRun 一支真不删', a
 });
 
 test('prune 不依赖 CVR 在跑 —— 清掉带 token 的旧备份正是关着核心时做的事', async () => {
-  const dir = path.join(os.tmpdir(), `qvp-prune-offline-${process.pid}`);
+  const dir = T.tmpDir('prune-offline');
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'profiles.yaml.20260101-000000-001.bak'), 'x');
@@ -404,7 +404,7 @@ const { createAudit } = require('../server/audit');
 const SECRET_URL = 'https://sub.example.invalid/Quir7aMockQwsxNcgv1234?token=abcdef0123456789abcdef0123456789';
 
 function auditDeps(label, over = {}) {
-  const dir = path.join(os.tmpdir(), `qvp-audit-wire-${label}-${process.pid}`);
+  const dir = T.tmpDir(`audit-wire-${label}`);
   fs.rmSync(dir, { recursive: true, force: true });
   const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: dir }));
   const audit = createAudit({ dirs, env: {}, now: () => 'T' });
@@ -477,7 +477,7 @@ test('proxy_status 回读账本：条数 + 最近若干次，不含任何参数�
 });
 
 test('账本关闭时 proxy_status 如实标 enabled:false，而不是假装没有日志', async () => {
-  const dir = path.join(os.tmpdir(), `qvp-audit-wire-off-${process.pid}`);
+  const dir = T.tmpDir('audit-wire-off');
   fs.rmSync(dir, { recursive: true, force: true });
   const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: dir }));
   const audit = createAudit({ dirs, env: { QODER_VPN_PROXY_AUDIT: '0' } });

@@ -2,13 +2,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { createAudit, argNames, FILE } = require('../server/audit');
 const store = require('../server/store');
+const T = require('./tmp');
 
 function sandbox(label, envOver = {}) {
-  const dir = path.join(os.tmpdir(), `qvp-audit-${label}-${process.pid}`);
+  const dir = T.tmpDir(`audit-${label}`);
   fs.rmSync(dir, { recursive: true, force: true });
   const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: dir }));
   const env = { ...envOver };

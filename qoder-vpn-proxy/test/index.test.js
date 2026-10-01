@@ -3,10 +3,10 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const store = require('../server/store');
 const { makeLogger } = require('../server/index');
+const T = require('./tmp');
 
 const ENTRY = path.join(__dirname, '..', 'server', 'index.js');
 
@@ -15,7 +15,7 @@ const ENTRY = path.join(__dirname, '..', 'server', 'index.js');
  * 少了这一层，子进程会去连本机真实管道，测试结论随用户此刻开没开 Clash Verge 而变。
  */
 function sandboxEnv() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-index-'));
+  const root = T.mkTmp('index');
   const empty = path.join(root, 'appdata');
   fs.mkdirSync(path.join(empty, 'Home'), { recursive: true });
   return {
@@ -92,7 +92,7 @@ test('每一行 stdout 都能独立解析，说明日志没有混进协议通道
 });
 
 test('落盘日志这一行也先过脱敏：订阅链接不进 mcp.log', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-logmask-'));
+  const root = T.mkTmp('logmask');
   const dirs = store.ensure(store.dirs({ QODER_VPN_PROXY_DATA: path.join(root, 'data') }));
   const log = makeLogger(dirs);
   // 同一行也会写 stderr（真进程里是给运维看的）；这里只验落盘那份，别让测试输出多一行噪音
