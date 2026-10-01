@@ -62,7 +62,19 @@ test('select 切换后回读确认', async () => {
 test('select 不存在的 target 抛 ApiError 而不是假装成功', async () => {
   const { fake, client: c } = await client();
   await assert.rejects(c.select('节点选择', '不存在的节点'), (e) => e.name === 'ApiError');
-  await assert.rejects(c.select('不存在的组', 'HK 3 | v4'), (e) => e.kind === 'channel_unavailable');
+  await assert.rejects(c.select('不存在的组', 'HK 3 | v4'), (e) => e.kind === 'malformed_config');
+  c.close(); await fake.close();
+});
+
+test('HTTP 404 是"名称/路径不对"，不能算通道故障', async () => {
+  // 真机 2026-10-01 实测：核心可达（running:true）时 proxy_select 传不存在的组，
+  // 仍回 kind=channel_unavailable；而 skill 对 channel_unavailable 的动作是"先 proxy_core_start"，
+  // 于是打错节点名会把调用方支去重启核心。404 归 malformed_config，hint 仍要给出核对名字的办法。
+  const { fake, client: c } = await client();
+  const e = await c.select('不存在的组', 'HK 3 | v4').then(() => null, (err) => err);
+  assert.equal(e.kind, 'malformed_config');
+  assert.match(e.hint, /proxy_nodes/);
+  assert.doesNotMatch(e.message, /password|uuid/i, '错误消息里不带节点秘密字段');
   c.close(); await fake.close();
 });
 

@@ -24,7 +24,7 @@ class ClashClient {
 
   get channelKind() { return this.transport.kind; }
 
-  /** 401 -> auth_failed；其余非 2xx -> 按状态分 timeout / channel_unavailable */
+  /** 401 -> auth_failed；404 -> malformed_config（名字/路径不对）；503/504 -> timeout；其余非 2xx 才算通道故障 */
   async request(method, path, { body, timeoutMs, expectEmpty = false } = {}) {
     const res = await this.transport.request(method, path, { body, timeoutMs });
     if (res.status === 401) {
@@ -37,10 +37,17 @@ class ClashClient {
       catch { throw new ApiError('malformed_config', `${method} ${path} 返回的不是合法 JSON`, redactText(res.text.slice(0, 160))); }
     }
     const detail = redactText((res.text || '').slice(0, 200));
+    // 404 是控制器答了但这个名字/路径没有对应资源 —— 入参问题，不是通道问题。
+    // 归 channel_unavailable 会让调用方按"先 proxy_core_start"去重启核心（真机 2026-10-01 踩过）。
+    const kind = res.status === 503 || res.status === 504
+      ? 'timeout'
+      : res.status === 404 ? 'malformed_config' : 'channel_unavailable';
     throw new ApiError(
-      res.status === 503 || res.status === 504 ? 'timeout' : 'channel_unavailable',
+      kind,
       `${method} ${path} -> HTTP ${res.status} ${detail}`,
-      res.status === 404 ? '组名 / 节点名 / uid 可能拼错，先用 proxy_nodes 或 proxy_subscriptions 核对' : ''
+      res.status === 404
+        ? '组名 / 节点名 / uid 可能拼错，先用 proxy_nodes 或 proxy_subscriptions 核对；若这个路径本身是核心没有的端点（如 v1.19.25 的 POST /configs/reload），404 说的是版本不支持，不是名字错了'
+        : ''
     );
   }
 
