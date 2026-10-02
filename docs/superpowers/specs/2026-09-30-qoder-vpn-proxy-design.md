@@ -185,7 +185,7 @@ Transport = {
 `proxy_toolconfig`（`action: "apply" | "revert" | "status"`，`target?: "npm" | "git"`）写用户级配置：
 
 - npm：在 `~/.npmrc` 追加 `proxy=` / `https-proxy=`（`registry.npmjs.org` 走代理），写入前先备份原文件。
-- git：`git config --global http.https://github.com.proxy http://127.0.0.1:7897`。**按域名前缀配置**，而不是 `http.proxy` 全局项，这样只影响 GitHub，国内站点与内网仓库不变道。
+- git：`git config --global http.https://github.com/.proxy http://127.0.0.1:7897`。**按域名前缀配置**，而不是 `http.proxy` 全局项，这样只影响 GitHub，国内站点与内网仓库不变道。URL 与 `proxy` 之间必须保留尾斜杠（`http.https://github.com/.proxy`）：git 对 `http.<url>.*` 做前缀匹配，少一个斜杠时 `https://github.com` 会连带匹配到 `https://github.com.evil.example` 这类仿冒域名，把代理设置泄漏过去。
 
 这两处都是用户级、可逐条还原、不影响浏览器与游戏，符合 §3.5 的 `scope=session` 语义（作用域是"这套工具链"，不是"整机"）。
 
