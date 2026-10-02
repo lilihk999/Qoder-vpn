@@ -80,7 +80,7 @@ test('stamp 连续调用不撞名（同毫秒内两次备份不能写到同一�
   assert.equal(seen.size, 200);
 });
 
-test('listBackupsIn 按落盘时间排，latestBackupIn 取到真正最新的那份', () => {
+test('listBackupsIn 混用两种时间戳时按时间戳排（mtime 只兜底），latestBackupIn 取到真正最新的那份', () => {
   const dir = tmp('backups');
   const bd = path.join(dir, 'backups');
   fs.mkdirSync(bd, { recursive: true });
@@ -94,6 +94,29 @@ test('listBackupsIn 按落盘时间排，latestBackupIn 取到真正最新的那
   fs.utimesSync(path.join(bd, dashed), at(23), at(23));
   assert.deepEqual(S.listBackupsIn(bd), [plain, dashed], '升序：更早的在前');
   assert.equal(S.latestBackupIn(bd, 'profiles.yaml'), path.join(bd, dashed));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('listBackupsIn 以时间戳为主键：copyFileSync 保留的旧 mtime 不能把真正的最新备份判成旧的', () => {
+  // Windows 上 fs.copyFileSync 走 Win32 CopyFile，会原样保留源文件 mtime（真机实测）：
+  // 把一份几个月前写过的基座备成"新备份"，它的 mtime 比昨天的备份还老 —— mtime 当主键时
+  // "谁是最新"会判错，而 pruneBackupsIn 正是靠这个次序保证"每组至少留最新一份"，
+  // 判错的后果不是排错序，是把真正最新的那份当旧的删掉。
+  const dir = tmp('backups-ts-primary');
+  const bd = path.join(dir, 'backups');
+  fs.mkdirSync(bd, { recursive: true });
+  const ancient = 'verge.yaml.20260901120000000-001.bak';
+  const staleMtime = 'verge.yaml.20261002-080940-559-002.bak'; // 名字最新，mtime 最老（复制来的旧基座）
+  const yesterday = 'verge.yaml.20261001120000000-001.bak';
+  for (const [f, day] of [[ancient, 1], [staleMtime, 2], [yesterday, 30]]) {
+    fs.writeFileSync(path.join(bd, f), f);
+    const at = new Date(Date.UTC(2026, 7, day, 0, 0, 0));
+    fs.utimesSync(path.join(bd, f), at, at);
+  }
+  assert.deepEqual(S.listBackupsIn(bd), [ancient, yesterday, staleMtime], '升序按时间戳：mtime 只兜底');
+  assert.equal(S.latestBackupIn(bd, 'verge.yaml'), path.join(bd, staleMtime));
+  const r = S.pruneBackupsIn(bd, { keepPerName: 1, olderThanDays: 14, now: Date.UTC(2026, 9, 2) });
+  assert.deepEqual(r.deleted.map((d) => d.file), [ancient, yesterday], '留下的必须是时间戳最晚的那份');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

@@ -10,6 +10,7 @@ const { startFake } = require('./fake-mihomo');
 const { createTransport } = require('../server/transport');
 const { ClashClient } = require('../server/clash-client');
 const { SubscriptionRepo } = require('../server/subscriptions');
+const { CvrConfig } = require('../server/cvr-config');
 const store = require('../server/store');
 
 const RUNTIME = {
@@ -487,4 +488,49 @@ test('账本关闭时 proxy_status 如实标 enabled:false，而不是假装没�
   assert.match(r.data.audit.note, /QODER_VPN_PROXY_AUDIT/);
   assert.equal(fs.existsSync(path.join(dirs.logs, 'calls.jsonl')), false);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/* ---------- 缺陷 ⑧ 的可见面：压制过没还，proxy_status 必须说出来 ---------- */
+
+test('proxy_status 见到压制 marker：state 按核心在不在跑判，且必须进 warnings', async () => {
+  const dir = T.tmpDir('status-suppression');
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'backups'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config', 'verge.yaml'), 'enable_system_proxy: true\nenable_proxy_guard: true\n');
+  fs.writeFileSync(path.join(dir, 'clash-verge.exe'), 'placeholder');
+  const cvr = new CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
+    exePath: path.join(dir, 'clash-verge.exe'), fsImpl: fs,
+    markerPath: path.join(dir, 'suppression.json'),
+    spawn: () => ({ unref() {} }), waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  await cvr.start({ scope: 'session' });
+  const status = async (running) => {
+    const { deps } = fakeDeps({
+      getRuntime: async () => ({ ...RUNTIME, configDir: path.join(dir, 'config'), running }),
+      getCvr: async () => cvr,
+    });
+    return callTool('proxy_status', {}, deps);
+  };
+  const r = await status(false);
+  assert.equal(r.ok, true);
+  assert.equal(r.data.suppression.present, true);
+  assert.equal(r.data.suppression.state, 'orphaned', '核心已停而压制还在 —— 这正是无主压制');
+  assert.deepEqual(r.data.suppression.entries.map((e) => e.key).sort(), ['enable_proxy_guard', 'enable_system_proxy']);
+  assert.equal(r.data.suppression.entries.find((e) => e.key === 'enable_system_proxy').before, 'true');
+  const warn = r.data.warnings.find((w) => /enable_system_proxy/.test(w));
+  assert.ok(warn, '只在子字段里说等于没说：调用方扫的是 warnings');
+  assert.match(warn, /proxy_core_stop/, '警告要给出出路，不是只报状态');
+  assert.equal((await status(true)).data.suppression.state, 'active');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('CVR 层读不到压制记录时标 available:false，不编造"没有压制过"', async () => {
+  const { deps } = fakeDeps(); // 假 cvr 没有 readSuppressionMarker：老 deps / 未接线的调用方
+  const r = await callTool('proxy_status', {}, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.data.suppression.available, false);
+  assert.equal(r.data.suppression.state, 'unknown', '读不到时不能给出一个看起来像结论的 state');
+  assert.doesNotMatch(JSON.stringify(r.data.suppression), /干净|无压制|没有压制|未压制|正常/, '读不到就是读不到，不能翻译成"没问题"');
 });

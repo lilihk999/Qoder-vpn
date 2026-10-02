@@ -84,7 +84,7 @@ test('backup 后 suppress 再 restore：逐字节一致', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('listBackups 混用两种时间戳格式时按 mtime 排，restore 取到真正的最新', async () => {
+test('listBackups 混用两种时间戳格式时按时间戳排（mtime 只兜底），restore 取到真正的最新', async () => {
   // 真机 backups 目录里同时存在 cvr-config 的 20260930-123930-488-001 与
   // subscriptions 走 store.stamp 的 20260930125704201-001；'-'(0x2D) 比数字小，
   // 纯按文件名排序会把带横杠的（可能更晚的）备份判成最旧。
@@ -414,5 +414,152 @@ test('核心已停但系统代理还开着时，stop 要报出泄漏并给出修
   assert.ok(leak && /reg add/.test(leak), `泄漏警告里必须带上用户可执行的修复命令，实际：${leak}`);
   assert.ok(cmds.every((c) => !/^reg (add|delete)\b/i.test(c)), '插件只能读注册表，不能写');
   assert.ok(cmds.some((c) => /^reg query\b/i.test(c)), '确实做过只读复查');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/* ---------- 缺陷 ⑧：被中断的 core_start 会把"压制系统代理"留成无主状态 ---------- */
+
+const markerOf = (dir) => path.join(dir, 'suppression.json');
+const readMarker = (dir) => JSON.parse(fs.readFileSync(markerOf(dir), 'utf8'));
+const entryOf = (m, key) => m.entries.find((e) => e.key === key);
+
+test('start(session) 压制成功后落 marker，把压制前的原值记在盘上', async () => {
+  const dir = mkSandbox('marker-write');
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
+    exePath: exe(dir), fsImpl: fs, markerPath: markerOf(dir),
+    spawn: () => ({ unref() {} }), waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  const r = await cvr.start({ scope: 'session' });
+  assert.ok(r.suppressionMarker, '返回值要自证落了 marker，否则调用方还得自己去猜');
+  assert.equal(r.suppressionMarker.path, markerOf(dir));
+  const m = readMarker(dir);
+  const proxy = entryOf(m, 'enable_system_proxy');
+  assert.deepEqual([proxy.before, proxy.after], ['true', 'false'],
+    '必须记下压制前的值：进程一被中断，"该改回什么"就只剩这份记录知道');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('start(global) 没改系统代理，也就不该留下 marker', async () => {
+  const dir = mkSandbox('marker-global');
+  const cvr = new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
+    exePath: exe(dir), fsImpl: fs, markerPath: markerOf(dir),
+    spawn: () => ({ unref() {} }), waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  const r = await cvr.start({ scope: 'global' });
+  assert.equal(r.suppressionMarker, null);
+  assert.ok(!fs.existsSync(markerOf(dir)), '没压制过就不要凭空造一份"看起来欠着东西"的记录');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('stop 把值还原到位后清除 marker', async () => {
+  const dir = mkSandbox('marker-clear');
+  const cfg = path.join(dir, 'config');
+  const mk = () => new C.CvrConfig({
+    configDir: cfg, backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs,
+    markerPath: markerOf(dir), execFile: () => Promise.resolve({ stdout: '' }),
+    spawn: () => ({ unref() {} }), waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  await mk().start({ scope: 'session' });
+  assert.ok(fs.existsSync(markerOf(dir)));
+  const r = await mk().stop({ restore: true, exitTimeoutMs: 200, pollMs: 50 });
+  assert.match(fs.readFileSync(path.join(cfg, 'verge.yaml'), 'utf8'), /^enable_system_proxy: true$/m);
+  assert.equal(r.suppression.cleared, true);
+  assert.ok(!fs.existsSync(markerOf(dir)), '正常一轮走完，marker 必须跟着消失');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('跨会话的无主压制：备份链本身就是压制态时，stop 仍要按 marker 记的原值补写', async () => {
+  // 真机踩法：会话 A 的 core_start 之后调用方进程被 SIGPIPE 打死（没有 stop），
+  // 会话 B 的 core_start 又"备份"了一次已经是压制态的 verge.yaml ——
+  // 于是 stop() 光靠"还原最近一份备份"永远修不好，压制成了孤儿。
+  const dir = mkSandbox('marker-orphan');
+  const cfg = path.join(dir, 'config');
+  const mk = () => new C.CvrConfig({
+    configDir: cfg, backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs,
+    markerPath: markerOf(dir), execFile: () => Promise.resolve({ stdout: '' }),
+    spawn: () => ({ unref() {} }), waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  await mk().start({ scope: 'session' });
+  await mk().backup(['verge.yaml']); // 会话 B 的入口备份：内容已经是 enable_system_proxy: false
+  assert.match(fs.readFileSync(path.join(cfg, 'verge.yaml'), 'utf8'), /^enable_system_proxy: false$/m);
+  const r = await mk().stop({ restore: true, exitTimeoutMs: 200, pollMs: 50 });
+  const text = fs.readFileSync(path.join(cfg, 'verge.yaml'), 'utf8');
+  assert.match(text, /^enable_system_proxy: true$/m, '无主压制必须被补还原，不能只信备份链');
+  assert.deepEqual(r.suppression.repaired.map((x) => x.key).sort(), ['enable_proxy_guard', 'enable_system_proxy']);
+  assert.equal(r.suppression.cleared, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('第二次 start 不能把 marker 里的原值覆盖成压制值', async () => {
+  const dir = mkSandbox('marker-merge');
+  const cfg = path.join(dir, 'config');
+  const mk = () => new C.CvrConfig({
+    configDir: cfg, backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs,
+    markerPath: markerOf(dir), execFile: () => Promise.resolve({ stdout: '' }),
+    spawn: () => ({ unref() {} }), waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  await mk().start({ scope: 'session' });
+  await mk().start({ scope: 'session' }); // 上一轮的压制还没还原，这一轮的"前值"就是 false
+  const m = readMarker(dir);
+  assert.equal(entryOf(m, 'enable_system_proxy').before, 'true',
+    'marker 记的是"用户自己的值"，多次压制只能合并、不能把原值洗成 false');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('stop({restore:false}) 要保留 marker：压制还在生效，不能装作已经交还', async () => {
+  const dir = mkSandbox('marker-keep');
+  const cfg = path.join(dir, 'config');
+  const mk = () => new C.CvrConfig({
+    configDir: cfg, backupDir: path.join(dir, 'backups'), exePath: exe(dir), fsImpl: fs,
+    markerPath: markerOf(dir), execFile: () => Promise.resolve({ stdout: '' }),
+    spawn: () => ({ unref() {} }), waitForChannel: async () => ({ kind: 'pipe', ports: {} }),
+  });
+  await mk().start({ scope: 'session' });
+  const r = await mk().stop({ restore: false });
+  assert.equal(r.suppression.present, true, '没还原就得承认还欠着');
+  assert.equal(r.suppression.cleared, false);
+  assert.ok(fs.existsSync(markerOf(dir)));
+  assert.match(fs.readFileSync(path.join(cfg, 'verge.yaml'), 'utf8'), /^enable_system_proxy: false$/m);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('start 失败回滚时也要把 marker 撤掉，不留假欠条', async () => {
+  const dir = mkSandbox('marker-rollback');
+  const mk = (waitForChannel) => new C.CvrConfig({
+    configDir: path.join(dir, 'config'), backupDir: path.join(dir, 'backups'),
+    exePath: exe(dir), fsImpl: fs, markerPath: markerOf(dir),
+    spawn: () => ({ unref() {} }), waitForChannel,
+  });
+  // 先让一轮成功的 start 把 marker 落到盘上：否则这条用例在"根本没写过 marker"的实现上
+  // 也会通过，测的就不是"回滚会撤欠条"而是"欠条从来不存在"。
+  await mk(async () => ({ kind: 'pipe', ports: {} })).start({ scope: 'session' });
+  assert.ok(fs.existsSync(markerOf(dir)), '前置条件：这一轮成功压制并留下 marker');
+  await assert.rejects(mk(async () => { throw new C.ApiError('channel_unavailable', '不可达'); }).start({ scope: 'session' }));
+  assert.ok(!fs.existsSync(markerOf(dir)), '配置已回滚，marker 若还留着就是在谎称"欠着压制"');
+  // 入口备份此刻本身就是压制态（第一轮 start 留下的），只靠 restoreFrom 回不到用户的原值，
+  // 所以失败路径也要按 marker 记的 before 补写一次 —— 否则"启动失败机器状态不变"这句承诺是假的。
+  assert.match(fs.readFileSync(path.join(dir, 'config', 'verge.yaml'), 'utf8'), /^enable_system_proxy: true$/m);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('listBackups 以时间戳为主键：mtime 更旧但 ts 更晚的备份排第一', async () => {
+  // fs.copyFileSync 走 Win32 CopyFile，会原样保留源文件 mtime（真机实测），
+  // 所以 mtime 一旦当主键，"哪份备份最新"就会在"复制旧基座 -> 落新备份"的流程里判错。
+  const dir = mkSandbox('ts-primary');
+  const bd = path.join(dir, 'backups');
+  const f = path.join(dir, 'config', 'verge.yaml');
+  const laterTsOlderMtime = path.join(bd, 'verge.yaml.20260930-235959-999-001.bak');
+  const earlierTsNewerMtime = path.join(bd, 'verge.yaml.20260930120000000-001.bak');
+  fs.writeFileSync(laterTsOlderMtime, 'REAL_NEWEST');
+  fs.writeFileSync(earlierTsNewerMtime, 'STALE_BUT_FRESH_MTIME');
+  const old = (d) => new Date(Date.UTC(2026, 7, d, 0, 0, 0)); // 8 月，比另一份的 9 月早
+  fs.utimesSync(laterTsOlderMtime, old(1), old(1));
+  fs.utimesSync(earlierTsNewerMtime, old(28), old(28));
+  const cvr = new C.CvrConfig({ configDir: path.join(dir, 'config'), backupDir: bd, exePath: exe(dir), fsImpl: fs });
+  assert.equal(cvr.listBackups()[0].backupPath, laterTsOlderMtime, '排序主键必须是 ts，不是 mtime');
+  await cvr.restore(['verge.yaml']);
+  assert.equal(fs.readFileSync(f, 'utf8'), 'REAL_NEWEST', '还原要挑真正晚近的那份');
   fs.rmSync(dir, { recursive: true, force: true });
 });

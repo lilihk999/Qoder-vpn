@@ -15,6 +15,7 @@ const store = require('./store');
 const { createAudit } = require('./audit');
 
 const LOG_FILE = 'mcp.log';
+const MARKER_FILE = 'suppression.json';
 const RUNTIME_TTL_MS = 2000;
 const DRAIN_GRACE_MS = 15000;
 
@@ -57,7 +58,12 @@ function buildDeps(dirs, log, env = process.env) {
   const getCvr = async () => {
     const rt = await getRuntime();
     if (!rt.configDir) return null;
-    return new CvrConfig({ configDir: rt.configDir, backupDir: dirs.backups, exePath: rt.exePath });
+    // markerPath 放在插件自己的数据目录，不进 CVR 配置目录：
+    // 它是"本会话欠着还原"的唯一跨进程凭证，被 CVR 或用户误删就等于把无主压制变成哑巴状态
+    return new CvrConfig({
+      configDir: rt.configDir, backupDir: dirs.backups, exePath: rt.exePath,
+      markerPath: path.join(dirs.root, MARKER_FILE),
+    });
   };
 
   const getRepo = async () => {

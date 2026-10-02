@@ -121,6 +121,32 @@ function configDriftOf(cvr) {
 
 const AUDIT_PREVIEW = 10;
 
+/**
+ * 把 CvrConfig.readSuppression 的三态整理成一块自解释的输出。
+ * state 由"核心还在不在跑"决定：marker 在而核心没跑 = 无主压制（缺陷 ⑧ 的现场），
+ * marker 在且核心在跑 = 本会话正在用的压制。读不到入口时只能报"无从判断"。
+ */
+function suppressionOf(cvr, running) {
+  if (!cvr || typeof cvr.readSuppression !== 'function') {
+    return { available: false, present: false, state: 'unknown', entries: [], note: 'CVR 配置层缺少压制凭证入口（readSuppression），压制状态无法判断 —— 这是"读不到"，别当成结论。' };
+  }
+  let s;
+  try { s = cvr.readSuppression(); } catch (e) {
+    return { available: false, present: false, state: 'unknown', entries: [], error: toEnvelope(e).kind, note: `压制凭证读取抛错（${toEnvelope(e).kind}），压制状态无法判断 —— 这是"读不到"，别当成结论。` };
+  }
+  if (!s.available) return { ...s, state: 'unknown' };
+  if (!s.present) return { ...s, state: 'none' };
+  return { ...s, state: running ? 'active' : 'orphaned' };
+}
+
+/** 压制凭证在盘上就是"本插件改过且尚未确认还原"，这件事必须出现在 warnings 里而不是只躺在子字段。 */
+function suppressionWarning(s) {
+  if (!s.present) return null;
+  const keys = s.entries && s.entries.length ? s.entries.map((e) => `${e.key}（原值 ${e.before === null ? '未知' : e.before}）`).join('、') : 'enable_system_proxy / enable_proxy_guard';
+  if (s.error === 'unreadable') return `压制凭证文件存在但读不懂（${s.path}），无法判断该还原成什么；跑 proxy_core_stop 或手工删除该文件。`;
+  return `插件已把 ${keys} 压制为 false 且尚未确认还原（${s.state === 'orphaned' ? '无主压制：核心当前没在运行，这份改动没有归属' : '本会话压制中'}）。收尾请用 proxy_core_stop 交还；它会自动按凭证补回原值。`;
+}
+
 /** 把账本回读并包成 proxy_status 的一块输出；没注入审计（未接线的 deps）就不编造字段。 */
 function auditOf(deps) {
   if (typeof deps.getAudit !== 'function') return undefined;
@@ -144,7 +170,7 @@ function buildTools(deps) {
   return [
     {
       name: 'proxy_status',
-      description: '查看本机代理现状：Clash Verge 是否在运行、控制通道走命名管道还是 TCP、mixed 端口、运行模式、当前节点与订阅余量、系统代理与 TUN 状态（只读展示，绝不改动），configDrift —— 当前 verge.yaml/profiles.yaml 与插件最近一次时间戳备份的三态对照（dirty / clean / noBackup），以及 audit —— 本插件最近若干次 tools/call 的账本（只有时间、工具名、参数名、成败、kind、耗时，没有任何参数值）。核心未运行时也返回成功，不可达原因在 data.core 里。',
+      description: '查看本机代理现状：Clash Verge 是否在运行、控制通道走命名管道还是 TCP、mixed 端口、运行模式、当前节点与订阅余量、系统代理与 TUN 状态（只读展示，绝不改动），configDrift —— 当前 verge.yaml/profiles.yaml 与插件最近一次时间戳备份的三态对照（dirty / clean / noBackup），suppression —— 插件的"压制凭证"（present 与 state=active/orphaned/none，entries 记着 enable_system_proxy / enable_proxy_guard 被压制前的原值；orphaned 表示核心没在跑却仍带着未还原的压制，会同时进 warnings），以及 audit —— 本插件最近若干次 tools/call 的账本（只有时间、工具名、参数名、成败、kind、耗时，没有任何参数值）。核心未运行时也返回成功，不可达原因在 data.core 里。',
       inputSchema: obj(),
       handler: async () => {
         const rt = await deps.getRuntime();
@@ -154,7 +180,7 @@ function buildTools(deps) {
           ports: rt.ports,
           controller: { pipe: rt.controller.pipe, tcp: rt.controller.tcp, tcpConfigured: rt.controller.tcpConfigured, tcpEnabled: rt.controller.tcpEnabled },
           settings: { enableSystemProxy: rt.settings.enableSystemProxy, enableTunMode: rt.settings.enableTunMode, enableExternalController: rt.settings.enableExternalController },
-          warnings: rt.warnings,
+          warnings: [...(rt.warnings || [])],
         };
         try {
           const client = await deps.getClient();
@@ -179,12 +205,20 @@ function buildTools(deps) {
         } catch (e) {
           out.toolconfig = { error: toEnvelope(e).kind };
         }
+        let cvrForStatus = null;
         try {
           const cvr = await deps.getCvr();
+          cvrForStatus = cvr;
           out.configDrift = configDriftOf(cvr);
         } catch (e) {
           out.configDrift = { available: false, error: toEnvelope(e).kind, dirty: [], clean: [], noBackup: DRIFT_NAMES, note: 'CVR 配置层读不到，配置状态无法判断 —— 这不是"干净"。' };
         }
+        try {
+          out.suppression = suppressionOf(cvrForStatus, rt.running);
+        } catch (e) {
+          out.suppression = { available: false, present: false, state: 'unknown', entries: [], error: toEnvelope(e).kind, note: '压制状态无法判断 —— 这是"读不到"，别当成结论。' };
+        }
+        if (out.suppression.present) out.warnings = [...out.warnings, suppressionWarning(out.suppression)];
         const audit = auditOf(deps);
         if (audit) out.audit = audit;
         return ok(out);
@@ -247,7 +281,7 @@ function buildTools(deps) {
     },
     {
       name: 'proxy_core_stop',
-      description: '结束 clash-verge.exe 与 verge-mihomo.exe 进程，等进程确实退出后再把 verge.yaml 还原到最近一次插件备份（profiles.yaml 属用户持久数据，不由 stop 还原，要用 proxy_restore_config）。返回 stillRunning 与 systemProxyEnabled 供确认系统代理没被重新打开。',
+      description: '结束 clash-verge.exe 与 verge-mihomo.exe 进程，等进程确实退出后再把 verge.yaml 还原到最近一次插件备份（profiles.yaml 属用户持久数据，不由 stop 还原，要用 proxy_restore_config）。返回 stillRunning 与 systemProxyEnabled 供确认系统代理没被重新打开。返回的 suppression 是压制凭证的处理结果：repaired 列出"备份链本身也是压制态、于是按凭证补回原值"的键，cleared 表示凭证已作废；restore=false 时凭证保留并在 warnings 里说明还欠着。',
       inputSchema: obj({ restore: bool('是否还原配置备份，默认 true') }),
       handler: async (a = {}) => {
         const cvr = await deps.getCvr();
