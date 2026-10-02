@@ -61,12 +61,32 @@ function moveToTrash(d, absPath) {
 
 function listTrash(d) { try { return fs.readdirSync(d.trash); } catch { return []; } }
 
-/** 备份目录里的文件名，按落盘时间升序（两种 stamp 格式混在同一目录，字典序会排错） */
+/**
+ * 备份名里的时间戳归一成纯数字再比：cvr-config 用 `20260930-235959-999-001`、
+ * subscriptions 走 store.stamp 用 `20260930125704203-003`，去掉分隔符后同为 20 位，可直接比大小。
+ * padEnd 只是给"时间戳被人为改短"的极端情况一个确定次序。
+ */
+function backupOrderKey(file) {
+  const m = /\.([\d-]+)\.bak$/.exec(file);
+  return m ? m[1].replace(/\D/g, '').padEnd(24, '0') : '';
+}
+
+/**
+ * 备份目录里的文件名，按"备份的时间戳"升序（两种 stamp 格式混在同一目录，字典序会排错）。
+ * ts 是主键、mtime 只兜底：fs.copyFileSync 在 Windows 上保留源文件 mtime，
+ * 所以"复制一份旧基座→落新备份"会得到一个 mtime 很老的新备份，mtime 当主键就把它判成旧的，
+ * 于是 pruneBackupsIn 的"每组至少留最新一份"会反过来把真正最新的那份删掉。
+ */
 function listBackupsIn(dirPath) {
   let files;
   try { files = fs.readdirSync(dirPath).filter((f) => /\.[\d-]+\.bak$/.test(f)); } catch { return []; }
   const mtime = (f) => { try { return fs.statSync(path.join(dirPath, f)).mtimeMs; } catch { return 0; } };
-  return files.sort((a, b) => (mtime(a) - mtime(b)) || (a < b ? -1 : a > b ? 1 : 0));
+  return files.sort((a, b) => {
+    const ka = backupOrderKey(a), kb = backupOrderKey(b);
+    if (ka !== kb) return ka < kb ? -1 : 1;
+    const ma = mtime(a) - mtime(b);
+    return ma !== 0 ? ma : (a < b ? -1 : a > b ? 1 : 0);
+  });
 }
 
 function latestBackupIn(dirPath, name) {
@@ -129,5 +149,5 @@ function restoreFromTrash(d, name, dest) {
 
 module.exports = {
   dataDir, dirs, ensure, readJson, writeJsonAtomic, stamp,
-  moveToTrash, listTrash, listBackupsIn, latestBackupIn, pruneBackupsIn, restoreFromTrash,
+  moveToTrash, listTrash, listBackupsIn, backupOrderKey, latestBackupIn, pruneBackupsIn, restoreFromTrash,
 };

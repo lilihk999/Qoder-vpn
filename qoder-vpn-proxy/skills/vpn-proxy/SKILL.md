@@ -18,12 +18,14 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 | 加第二个机场 | `proxy_subscription_add` + 需要时 `activate` |
 | 实验做完、`backups/` 里堆了带 token 的旧备份 | `proxy_restore_config prune=true`（先 `dryRun=true` 看一眼要删什么） |
 | "刚才那步到底做没做、报的什么错" | `proxy_status` 的 `audit` —— 最近 10 次调用的工具名/参数名/成败/kind/耗时 |
+| "上一个会话是不是压制了系统代理没还原" | `proxy_status` 的 `suppression` —— `present:true` 且 `state:"orphaned"` 就是无主压制，收尾跑 `proxy_core_stop` |
 
 ## 边界（不要越界）
 
 - **不改系统代理、不开 TUN、不写注册表**。浏览器和游戏不受影响，这是设计前提，不是副作用。
 - `proxy_core_stop` 会等进程真退出再还原配置，并把注册表里的 `ProxyEnable` 只读复查一遍回报（`systemProxyEnabled`）。若它是 `true`，说明系统代理被重新打开而核心已停 —— 浏览器会全线"连接被拒绝"。按 `warnings` 里给出的 `reg add` 命令**让用户自己执行**；插件不代写注册表，也不要擅自改动 `ProxyServer` / `ProxyOverride`。
 - **Qoder 自身的模型与 MCP 请求不走代理**——这是用户的决定，不是性能建议。`proxy_diagnose` 的实测也支持它（`qoder.com` 直连 0.5s、经代理 3.7s）。不要把 `HTTPS_PROXY` 指向本机端口。
+- **`scope=session` 确实会改 `verge.yaml`**（把 `enable_system_proxy` / `enable_proxy_guard` 置 `false`），改之前先备份、并把压制前的原值记进数据目录的 `suppression.json`。所以"没走到 `proxy_core_stop`"不等于永久压制：下一次 `stop` 会按这份凭证补回原值，`proxy_status` 也会把它点名为 `orphaned`。看到 `orphaned` 就安排一次 `proxy_core_stop` 收尾，别自己手改 `verge.yaml`。
 - 会话结束前若用了 `proxy_toolconfig apply`，提醒用户可 `action=revert` 还原；不要静默留着。
 - 订阅 URL **整条**是凭据：主机名、路径段、token 在工具输出里全部掩掉，只剩 `https://<masked-host>/<masked-path>?<masked-query>` 与 `urlFingerprint`。**不要**在回复里复述原始链接（包括你自己从 `profiles.yaml` 读到的原值）；要确认"是不是同一条链接"就比指纹。
 - `backups/` 里的 `profiles.yaml.*.bak` **是未脱敏的原始字节，含订阅 token**，且清理不会自动发生——每次动过配置的流程结束时跑一次 `prune`。
@@ -38,4 +40,5 @@ description: 识别并使用本机 Clash Verge Rev 代理。当直连超时（gi
 - `proxy_subscription_activate` 返回 `needsRestart: true` → 注册表已经改对，但 mihomo（v1.19.25 起）没有 reload 端点，新节点还没进内存。要么 `proxy_core_stop` + `proxy_core_start`，要么让用户在 GUI 里点一下该订阅，别重复调用 activate。
 - `subscription_format_unexpected` → 机场按 UA 分流，或链接已失效；不是插件的 bug。
 - `proxy_diagnose` 里 `HTTP 2xx` 且 `curl exit 28` 的行算**通但被 max-time 截断**（`truncated: true`），不是通道故障。别据此建议换节点——按 `advice` 把 `timeoutMs` 调大（如 20000）重跑一次再判"慢"还是"不通"。
+- `proxy_status` 的 `suppression.available:false` 是**读不到**（没接上 CVR 配置层），不是"没压制过"；`error:"unreadable"` 表示凭证文件在盘上但解析不了 —— 插件既不猜原值也不顺手删（删了就没现场证据），需要用户确认后手工删除该文件。
 - `proxy_status` 的 `configDrift.dirty` 只说明**当前字节与插件最近一次备份不同**，看不出是谁改的：插件改的、CVR 运行时自己回写的（`profiles.yaml` 的元数据经常这样）、用户手改的都算进来。`noBackup` 是"没得比"，不等于"没问题"；`available:false` 才是读不到。刚 `proxy_restore_config` 完就再次报脏，通常是核心还在跑（还原输出里的 `warnings` 会点名这一种）。

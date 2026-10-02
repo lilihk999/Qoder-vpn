@@ -24,10 +24,10 @@
 
 | 工具 | 作用 |
 |---|---|
-| `proxy_status` | 现状一页纸：是否安装/在跑、通道（管道还是 TCP）、mixed 端口、模式、当前节点、订阅余量、系统代理与 TUN 开关（只读展示），`configDrift` = 当前 `verge.yaml`/`profiles.yaml` 与插件最近一次备份的三态对照（`dirty` / `clean` / `noBackup`；它只说"字节不同"，看不出是插件改的、CVR 自己回写的还是用户手改的），`audit` = 最近若干次 `tools/call` 的账本（时间、工具名、参数名、成败、kind、耗时；**没有参数值**，且不含正在执行的这次）。核心没跑也回 `ok:true`，不可达原因在 `data.core` 里 |
+| `proxy_status` | 现状一页纸：是否安装/在跑、通道（管道还是 TCP）、mixed 端口、模式、当前节点、订阅余量、系统代理与 TUN 开关（只读展示），`configDrift` = 当前 `verge.yaml`/`profiles.yaml` 与插件最近一次备份的三态对照（`dirty` / `clean` / `noBackup`；它只说"字节不同"，看不出是插件改的、CVR 自己回写的还是用户手改的），`suppression` = 压制凭证（`present`，`state` 取 `active`（核心在跑）/ `orphaned`（核心没跑却仍带着未还原的压制，同时进 `warnings`）/ `none`），`audit` = 最近若干次 `tools/call` 的账本（时间、工具名、参数名、成败、kind、耗时；**没有参数值**，且不含正在执行的这次）。核心没跑也回 `ok:true`，不可达原因在 `data.core` 里 |
 | `proxy_detect` | 解析出的端口 + 常见端口逐个 TCP 握手，列出哪些真能连 |
 | `proxy_core_start` | 启动 CVR。`scope=session`（默认）先备份 `verge.yaml` 再压制系统代理与 proxy guard；`scope=global` 保留用户自己的设置。需要开外部控制时传 `enableExternalControl=true`（**先征得用户同意**） |
-| `proxy_core_stop` | 结束 `clash-verge.exe` / `verge-mihomo.exe`，**等进程确实退出后**才动手还原（否则 CVR 拆除中会重新打开系统代理）；`restore:true`（默认）只把 `verge.yaml` 的系统代理压制还原回去，**不会**撤销你已经切换/新增的订阅；返回 `stillRunning` 与只读复查的 `systemProxyEnabled` |
+| `proxy_core_stop` | 结束 `clash-verge.exe` / `verge-mihomo.exe`，**等进程确实退出后**才动手还原（否则 CVR 拆除中会重新打开系统代理）；`restore:true`（默认）只把 `verge.yaml` 的系统代理压制还原回去，**不会**撤销你已经切换/新增的订阅；返回 `stillRunning` 与只读复查的 `systemProxyEnabled`，外加 `suppression`（`repaired` = 备份链本身就是压制态、于是按 `suppression.json` 记的原值补回的键，`cleared` = 凭证已作废） |
 | `proxy_nodes` | 列策略组与组内**节点名**，含当前选中项 |
 | `proxy_select` | 切节点或切模式（`rule` / `global` / `direct`），切完回读确认生效 |
 | `proxy_test` | 对节点跑真实 `/delay` 测速，串行执行，按延迟升序返回，坏节点标 `ok:false` 与原因 |
@@ -64,6 +64,7 @@
 | `subscriptions.json` | 插件侧的订阅备注（显示名、备注、自动更新策略）；真正的订阅注册表仍是 CVR 的 `profiles.yaml` |
 | `backups/` | 每次写 `verge.yaml` / `profiles.yaml` / `~/.npmrc` 前的时间戳备份，`proxy_restore_config` 列的就是这里。**`profiles.yaml.*.bak` 是原始字节，里面带着未脱敏的订阅 token**；保留期靠 `proxy_restore_config prune=true`（默认每个名字留 5 份、超过 14 天的旧副本删掉，最新一份永远留），清理不会自动发生 |
 | `.trash/` | 删除订阅时移入的内容文件，可手动挪回 |
+| `suppression.json` | 压制凭证：`proxy_core_start scope=session` 在把 `enable_system_proxy` / `enable_proxy_guard` 置 `false` **之前**，先记下它们压制前的原值。`proxy_core_stop` 确认还原到位后作废它；`proxy_status` 的 `suppression` 字段就是读它 —— 一次被中断的 start（调用方进程暴死、没走到 stop）因此不会留下"没人知道自己压制过"的无主状态。里面只有键名与 `true`/`false`，没有任何订阅或节点信息 |
 | `logs/mcp.log` | MCP 服务端日志。**只写文件与 stderr，绝不写 stdout** —— stdout 是协议通道 |
 | `logs/calls.jsonl` | 审计账本：每次 `tools/call` 落一行 `{ts, tool, args, ok, kind, ms}`。`args` 是**参数名**数组，参数值一个都不写 —— 订阅链接、节点名、组名一旦进这个文件就是永久磁盘残留。超过 64KB 裁到最近 200 条，`proxy_status` 的 `audit` 字段回读最近 10 条。想彻底不写：`QODER_VPN_PROXY_AUDIT=0`（重启 Qoder 生效） |
 
