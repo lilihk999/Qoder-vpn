@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Detect and drive the local Clash Verge Rev / mihomo proxy: status, node selection, latency test, subscription CRUD, and per-tool proxy wiring for this session's npm/git/pip toolchain without touching the system proxy.",
   "descriptionZh": "识别并驱动本机 Clash Verge Rev / mihomo 代理：状态探测、节点选择与测速、订阅增删改、按工具写入代理配置。默认只影响 Qoder 会话内的命令行工具，不改系统代理与 TUN。",
-  "author": { "name": "<USER>" },
+  "author": { "name": "lilihk999" },
   "license": "MIT",
   "category": "Developer Tools",
   "keywords": ["proxy", "clash-verge", "mihomo", "vpn", "subscription", "network"],
