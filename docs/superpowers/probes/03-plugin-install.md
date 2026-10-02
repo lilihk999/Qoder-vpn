@@ -19,7 +19,7 @@
 ```
 version: 2 | plugins 类型: object | 条目数: 38
 qoder-vpn-proxy@local => [{"scope":"user",
-  "installPath":"C:\\Users\\Administrator\\.qoder\\plugins\\cache\\local\\qoder-vpn-proxy\\0.1.0",
+  "installPath":"C:\\Users\\<user>\\.qoder\\plugins\\cache\\local\\qoder-vpn-proxy\\0.1.0",
   "version":"0.1.0","installedAt":"2026-09-30T04:36:55.204Z",
   "lastUpdated":"2026-09-30T04:36:55.205Z","displayName":"VPN 代理助手"}]
 ```

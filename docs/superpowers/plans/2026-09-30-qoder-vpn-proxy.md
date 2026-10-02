@@ -27,7 +27,7 @@
 
 ## 文件结构
 
-在 `C:\Users\Administrator\Documents\Qoder\2026-09-30\aa25fd26\qoder-vpn-proxy\` 下开发：
+在 `C:\Users\<user>\Documents\Qoder\2026-09-30\aa25fd26\qoder-vpn-proxy\` 下开发：
 
 | 文件 | 职责 |
 |---|---|
@@ -176,7 +176,7 @@ git add -A && git commit -m "probe: 命名管道 mihomo REST 握手实测结论"
 ```bash
 ls -d "/c/Program Files/Qoder"* 2>/dev/null
 find "$HOME/.qoder/app" -maxdepth 3 -name '*.js' 2>/dev/null | head
-find "/c/Users/Administrator/AppData/Local" -maxdepth 4 -iname '*qoder*' -type d 2>/dev/null | head
+find "/c/Users/<user>/AppData/Local" -maxdepth 4 -iname '*qoder*' -type d 2>/dev/null | head
 ```
 
 Expected: 找到 CLI 的 JS 目录（后续 grep 目标）。
@@ -6192,7 +6192,7 @@ Expected: `# tests 144`（Task 14 收尾时 125，本任务净增 19：protocol 
   "version": "0.1.0",
   "description": "Detect and drive the local Clash Verge Rev / mihomo proxy: status, node selection, latency test, subscription CRUD, and per-tool proxy wiring for this session's npm/git/pip toolchain without touching the system proxy.",
   "descriptionZh": "识别并驱动本机 Clash Verge Rev / mihomo 代理：状态探测、节点选择与测速、订阅增删改、按工具写入代理配置。默认只影响 Qoder 会话内的命令行工具，不改系统代理与 TUN。",
-  "author": { "name": "Administrator" },
+  "author": { "name": "<user>" },
   "license": "MIT",
   "category": "Developer Tools",
   "keywords": ["proxy", "clash-verge", "mihomo", "vpn", "subscription", "network"],
