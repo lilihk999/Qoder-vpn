@@ -170,7 +170,7 @@ subscription_activate,subscription_remove,diagnose,restore_config}
 $ proxy_nodes {} → {"ok":false,"kind":"not_installed", …}
 ```
 
-而这台机器上 CVR **确实装着**：`<HOME>\AppData\Roaming\io.github.clash-verge-rev.clash-verge-rev` 完整存在（`config.yaml`/`profiles.yaml`/`verge.yaml` 等），Git Bash 里 `APPDATA` 也有值。**同一段代码在 CLI 环境下 `installed:true`，在 Qoder 拉起的进程里 `installed:false`** —— 原因是 `resolveConfigDir()` 只认 `env.APPDATA`，缺失后直接退到 POSIX 的 `~/.config`，Windows 上必然找不到。`ProgramFiles` 却没被吞（`installDir` 正常解析），所以缺的只有 `APPDATA` 这一个变量。
+而这台机器上 CVR **确实装着**：`C:\Users\<user>\AppData\Roaming\io.github.clash-verge-rev.clash-verge-rev` 完整存在（`config.yaml`/`profiles.yaml`/`verge.yaml` 等），Git Bash 里 `APPDATA` 也有值。**同一段代码在 CLI 环境下 `installed:true`，在 Qoder 拉起的进程里 `installed:false`** —— 原因是 `resolveConfigDir()` 只认 `env.APPDATA`，缺失后直接退到 POSIX 的 `~/.config`，Windows 上必然找不到。`ProgramFiles` 却没被吞（`installDir` 正常解析），所以缺的只有 `APPDATA` 这一个变量。
 
 后果比"看不出来"严重：`proxy_subscriptions`、`proxy_core_start`、`proxy_diagnose`、`proxy_restore_config` 全部会误报未安装；SessionStart hook 更是永远判定"没装 CVR"而永不注入 —— 也就是说验收 9 的"不注入"在修复前是**假阳性**：不是"检测到核心没跑所以不注入"，而是"根本没检测到装着"。
 
@@ -181,7 +181,7 @@ $ proxy_nodes {} → {"ok":false,"kind":"not_installed", …}
 ```
 spawn …\.qoder\plugins\cache\local\qoder-vpn-proxy\0.1.0\server\index.js | APPDATA in child env: absent
 installed = true
-configDir = <HOME>\AppData\Roaming\io.github.clash-verge-rev.clash-verge-rev | source = config.yaml
+configDir = C:\Users\<user>\AppData\Roaming\io.github.clash-verge-rev.clash-verge-rev | source = config.yaml
 warnings  = []
 core      = channel_unavailable | mihomo 控制器不可达（命名管道 \\.\pipe\verge-mihomo: GET /version 连接失败: ENOENT）
 ```
@@ -221,7 +221,7 @@ TESTUID1ef15 | 示例机场(新) | active=true | nodes=15 | remark=2026-09-30 �
 
 == 删除旧条目 ==
 {"ok":true,"data":{"removed":"TESTUIDd7225","trashed":["profiles.yaml.20260930130959726-001.bak","20260930130959728-003-TESTUIDd7225.yaml"],
- "undo":"注册表备份在 C:\\Users\\<USER>\\.qoder\\vpn-proxy\\backups，内容文件在 C:\\Users\\<USER>\\.qoder\\vpn-proxy\\.trash；放回 …\\profiles 并重新 add 即可撤销"}}
+ "undo":"注册表备份在 C:\\Users\\<user>\\.qoder\\vpn-proxy\\backups，内容文件在 C:\\Users\\<user>\\.qoder\\vpn-proxy\\.trash；放回 …\\profiles 并重新 add 即可撤销"}}
 
 == profiles.yaml 注册项 ==
 3:current: TESTUID1ef15
@@ -247,13 +247,13 @@ TESTUID1ef15 | 示例机场(新) | active=true | nodes=15 | remark=2026-09-30 �
 
 ```
 == revert ==
-{"ok":true,"data":{"action":"revert","targets":["npm","git"],"npm":{"action":"removed-created","file":"C:\\Users\\<USER>\\.npmrc","backupPath":"C:\\Users\\<USER>\\.qoder\\vpn-proxy\\backups\\.npmrc.20260930125506962-001.bak"},"git":{"removed":[{"key":"http.https://github.com/.proxy","existed":true},{"key":"http.https://objects.githubusercontent.com/.proxy","existed":true},{"key":"http.https://api.github.com/.proxy","existed":true}]}}}
+{"ok":true,"data":{"action":"revert","targets":["npm","git"],"npm":{"action":"removed-created","file":"C:\\Users\\<user>\\.npmrc","backupPath":"C:\\Users\\<user>\\.qoder\\vpn-proxy\\backups\\.npmrc.20260930125506962-001.bak"},"git":{"removed":[{"key":"http.https://github.com/.proxy","existed":true},{"key":"http.https://objects.githubusercontent.com/.proxy","existed":true},{"key":"http.https://api.github.com/.proxy","existed":true}]}}}
 
 == status（应 clean）==
 verdict clean npmrc.exists false npmrc.managed false git.mismatch true
 == 现场核对 ==
 git http.* 已清空
--rw-r--r-- 1 <USER> 197121 0 Sep 30 12:55 /c/Users/<USER>/.gitconfig
+-rw-r--r-- 1 <user> 197121 0 Sep 30 12:55 /c/Users/<user>/.gitconfig
 ```
 
 **结论**：达成。`verdict:'clean'`；git 全局配置回到 0 字节空文件（基线本来就没有 `http.*`）；`~/.npmrc` 基线不存在，apply 时是"新建"，revert 就把它删回"不存在"，同时留了时间戳备份。
@@ -268,8 +268,8 @@ git http.* 已清空
 
 ```
 == 插件数据目录（排除 CVR 自己的工作文件）==
-/c/Users/<USER>/.qoder/vpn-proxy/backups/profiles.yaml.20260930-123930-488-001.bak
-/c/Users/<USER>/.qoder/vpn-proxy/backups/profiles.yaml.20260930-130648-474-001.bak
+/c/Users/<user>/.qoder/vpn-proxy/backups/profiles.yaml.20260930-123930-488-001.bak
+/c/Users/<user>/.qoder/vpn-proxy/backups/profiles.yaml.20260930-130648-474-001.bak
 …（共 10 份 profiles.yaml 备份命中）
 == 日志 ==
 mcp.log
@@ -292,6 +292,8 @@ mcp.log
 **遗留问题（不能粉饰的那一条）**：插件自己的 `backups/profiles.yaml.*.bak` **含原始 token** —— 这是物理必然：备份是 CVR `profiles.yaml` 的逐字节副本，而那份文件本来就存订阅 URL。目前**没有**备份保留/过期策略，也没有对备份内容做脱敏（脱敏会让备份失去还原价值）。可选处置（都要用户点头）：加 `backups/` 保留期清理，或把备份目录权限收紧。
 
 **后记（用户点头后的处置）**：用户选了"① backups/ 加保留期清理"，实现见计划 Task 18 —— `proxy_restore_config prune=true`（默认每个文件名留 5 份、超 14 天的旧副本删除、最新一份永远留，`dryRun` 先出清单）。仍在的局限有两条，不遮掩：清理**不自动触发**（备份写入层用注入的假 `fs`，prune 用真 `unlinkSync`，硬拼会让那些假件失效），所以靠 SKILL.md 要求流程收尾跑一次；且**保留期内**的备份依旧是未脱敏原文，`keepPerName`/`olderThanDays` 只是把暴露窗口从"永久"压到"5 份 / 14 天"。另一条备选（收紧目录权限）没做。
+
+**第二次更正（20:0x，见未闭环清单第 13 条）**：本项当时判"达成"用的是**只红 token** 的口径，而订阅的**主机名与路径段本身**也留在每一次工具返回里。这个口径与后来为公开仓库做的域名重写（第 9 条）互相打脸，所以契约已升级为整条 URL 脱敏 + `urlFingerprint` 身份位。验收 7 的原始证据（token 0 命中）依然成立、没有被推翻，但**"达成"的含义变严了**：现在要求 host / path / query 三段都不出现在输出面与日志。
 
 ---
 
@@ -382,7 +384,7 @@ $ grep vpn-proxy ~/.qoder/logs/latest/qodercli.log | grep hook
 ```
 $ bash qvp-hook-repro.sh 'C:\Users\...\local\qoder-vpn-proxy\0.1.0' session-start
 == exit=255
-== output: <HOME>\...>OK_DIR%~1"   ← cmd.exe 已经错位到行中间
+== output: C:\Users\<user>\...>OK_DIR%~1"   ← cmd.exe 已经错位到行中间
                         ...>ram Files (x86)\Git\bin\bash.exe" (
 $ bash qvp-hook-repro.sh 'C:\Users\...\superpowers\6.3.0' session-start
 == exit=0    （正常吐出 additionalContext）
@@ -520,3 +522,131 @@ diff -rq server hooks skills + cmp .qoder-plugin/plugin.json → 无差异；
 10. **推送完成（18:4x）与认证真相**。remote `https://github.com/lilihk999/Qoder-vpn.git` 用 `git remote add` 加好（只写仓库级配置），远端原有一个与我们历史无关的 `main`（`c460b18`），**未做任何改动**。网络按"直连优先"：`git ls-remote` 直连 → `Recv failure: Connection was reset`；改走会话级环境变量 `HTTPS_PROXY=http://127.0.0.1:7897`（**没有**写 per-host 持久键、**没有**碰系统代理）→ 立刻通。最终远端：`master 2b3a7cc`、`qoder-vpn-proxy 4f9a1ee`，分支比 base 多 32 个提交，PR 由用户在网页手工建。
    **认证这条推翻了原假设**：用户选的是"GCM 弹窗"，但实测 `credential.helper` 指向的 `~/.qoder/bin/git/mingw64/bin/git-credential-manager.exe` 在本机**退出码 127、零输出**，根本起不来，`git credential fill` 因此返回空 → git 回落到终端提示 → 被 `GIT_TERMINAL_PROMPT=0` 挡成 `could not read Username`。真正能用的凭据在 Windows 凭据库里的 `git:https://github.com`（wincred 命名格式，账户 `lilihk999`），改用一次性 `-c credential.helper= -c credential.helper=wincred`（不落盘、不改配置）后推送立即成功。
    **过程里踩到的测量坑**：`cmdkey /list` 在 Git Bash 里被 MSYS 把 `/list` 当路径转换掉了，第一次执行输出的是 usage，我据此得出"凭据库为空"的**错误结论**；换成 `MSYS_NO_PATHCONV=1` + `iconv -f GBK -t UTF-8` 才读到真实列表（4 条）。另一个未解释点要如实记下：**第一支 `master` 推送成功时并没有显式用 wincred**，理论上当时 GCM 也该是坏的，所以那次成功是怎么发生的没查清 —— 不影响结果（两支都已推上、远端哈希与本地逐字节相同），但这条因果留作缺口。
+11. **回滚 bundle 已删 + 用"活凭据"做的终局审计（19:0x）**。用户点头后 `rm Temp/qvp-pre-scrub.bundle Temp/qvp-pre-domain.bundle` —— 这两份是重写前历史的**唯一本机副本**，删掉意味着回滚只能靠 GitHub 远端，此后机器上不再有任何带明文订阅凭据的仓库快照。审计脚本 `Temp/qvp-final-audit.js` 换了个更硬的口径：**不再靠形状猜测，也不靠历史清单**，而是运行时从本机 CVR 配置（含 `backups/`、`.trash/`）现取全部 `url:` 值，只把"带 `token=<32hex>` 或路径段是 16–24 位字母数字"的当凭据，比较时只打印 `sha256[:10]` + 长度。真凭据 needle 共 3 个：`HOST:<fp:sub-host>/18`、`PATH:<fp:sub-path>/20`、`TOKEN:<fp:sub-token>/32`（换链接前那条旧路径段已不在本机配置里，前一轮的形状扫描已覆盖它）。**结果**：仓库 `rev-list --objects --all` 全部 344 个对象里的 **130 个 blob，真凭据命中 0**。远端一致性用 `git ls-remote` 核过：`master 2b3a7cc…`、`qoder-vpn-proxy 919a8c0…`、`main c460b18…` 与本地逐字节相同，blob 是内容寻址的，所以"本地 0 命中"直接就是"GitHub 上那两个分支 0 命中"；同时看到 `refs/pull/1/head = 919a8c0` —— 用户已在网页把 PR #1 建好，base 正是要的 master。
+   **仍然留在本机的东西（本机-only，未外传，删不删归用户）**：同一套 needle 扫 `Temp` 得 **7 个文件**——`qvp-scrub-host.js`（它的搜索键就是域名本身，重写工具自带）、`qvpb/002.js` 与 `qvpb2/002.js`（09:52 那批 redact 测试草稿的副本，里面是**真 token**；仓库 tip 上同名位置早已换成合成 fixture）、`qvpb|qvpb2` 的 `025.js`（域名+路径段）、`031.js`（域名）。扫 `~/.qoder` 与 `Documents/Qoder` 另得 40+ 处，分两类：`vpn-proxy/backups/*.bak` 5 份是插件按设计为用户数据做的时间戳备份（预期内，prune 策略保留最新 5 份）；`logs/runs/*/qodercli.log`、`logs/sessions/**/segments/*.jsonl`、`projects/**/*.jsonl`（含当前会话那份 20MB，被我的 8MB 上限跳过但必然包含）、`file-history/aa25fd26-*/…@v1|v2|v3` 9 个快照、`tasks/aa25fd26*/20.json`、`tmp/**/tool-results/*.txt` —— 这些是**会话记录的自然残留**：用户第一条消息就把整条订阅链接贴进了对话，Qoder 的 transcript／运行日志／文件版本历史都会原样留存。它们不是插件的泄露，也不在任何仓库里；要清就得同时接受清掉本轮会话历史，是用户的取舍，我没有动。
+   **一个必须记下的误报教训**：脚本早期版本把 CVR 配置里**所有** `url:` 的主机都当凭据，于是 `HOST:80255870a6/15` 与 `PATH:cf3a006b60/12` 命中仓库 32 个 blob，看上去像"还有第三轮泄露"。用掩码上下文探针（`Temp/qvp-ctx.js`，把命中的字面量换成 `⟦HOST⟧` 只打印周边）一看就清楚了：那是 `www.gstatic.com` 与 `generate_204` —— 连通性探测 URL，公共地址且早已在公共源码里。所以判定凭据要按**形状**（token 查询串、16–24 位随机路径段），不能按"配置里出现过的字符串"。
+12. **Temp 全部临时件已清（19:1x）**。用户点头"清理那些临时文件"后删除：262 个 `qvp*` 条目（重写脚本、remap/pair/harvest 工具、`qvp-hook-*` 42 个 hook 测试目录、`qvp-install/` 冒烟产物、两份 hash-map TSV、`qvpb/` 与 `qvpb2/` 两批草稿副本）+ 4 个早期探针产物 `body.txt`、`raw-yaml.txt`、`h.txt`、`subhdr.txt`。**后两个里躺的是真节点凭据不是订阅串**：清理前的形状扫描（needle 从 CVR 运行档案与插件 store 现取）显示 `body.txt`/`raw-yaml.txt` 各命中 2 类节点秘密，所以它们和带真 token 的 `qvpb*/002.js` 一起进了删除清单。没碰 `qoder-git-hooks-*`、`qoder-*-cwd`、`qoder-sdk-auth-*` 等 Qoder 宿主自己的临时目录，也没碰任何非本项目的 Temp 条目。
+   **删后复验**（脚本用 stdin 喂给 `node`，机器上不再留副本）：18 个 needle（订阅 3 + 节点凭据 15）扫 Temp 现存 1356 个文件 → **命中 0**；扫仓库 349 个对象 / 131 个 blob → 报出 1 个 `NODE@22` 命中在公共 fixture `qoder-vpn-proxy/test/fixtures/sub-yaml.txt`。掩码上下文一看是 `chacha20-ietf-poly1305`（**22 个字符的算法名**，被我的 `cipher:` 抓取规则错当秘密），而该 fixture 本身是干净的合成数据：`server: 192.0.2.10`（TEST-NET 文档地址段）、`password: REDACTED`、`uuid: REDACTED-UUID`、`panel.example.invalid`。把算法名从 needle 里剔除后重跑：17 个 needle（订阅 3 + 真节点凭据 14），仓库 **0 命中**。
+   **第二条误报教训（和上一条同构）**：抓取"看起来像凭据"的键名时，`cipher`/算法名必须排除 —— 它是协议常量，本机配置与公共 fixture 里都是同一个字面量，不排除就会把公开测试数据读成泄露。
+13. **订阅 URL 完整脱敏（第二轮重启后的 20:0x，用户指令"先实现订阅 URL 脱敏逻辑"）**。这轮重启后重测插件健康度时暴露出一个自相矛盾：我们为了公开仓库把**域名**从历史里重写掉了（第 9 条），而插件自己却在**每一次工具返回**里把那个域名和路径段原文打印出来 —— 旧契约只红掉 `token=`（验收 7 当时判"达成"就是按这个口径）。`proxy_subscriptions` 的输出会进会话 transcript、进运行日志、被我这类助手复述，等于一边清理仓库一边往公开通道里补发凭据。
+
+   **新契约**（`server/redact.js`）：订阅地址的展示形态是 `https://<masked-host>/<masked-path>?<masked-query>`，解析不了的整条替换为 `<masked-url>`，空/非字符串回 `''`；主机名、路径段、query 三段都不出边界。同一条链接的身份改由 `urlFingerprint = sha256(host + '/' + pathname)` 前 10 位承担，**token 不参与计算** —— 用户对指纹要回答的是"是不是同一家同一条链接"，换 token 前后应当一致；`urlPathOnly` 字段（旧契约里唯一暴露路径段的字段）直接删除，不保留兼容位。
+   **形状判据**沿用第 11/12 条凭据审计的同源规则而不是白名单：`token=` 查询参数，或路径首段恰为 16–24 位纯字母数字。这条判据必须**只**命中订阅，否则 `proxy_diagnose` 就废了 —— 公共探测地址逐条验过都不命中（`pypi.org/simple/`、`www.gstatic.com/generate_204` 首段 12 位含下划线、`raw.githubusercontent.com/a/b/main/x.js` 首段 1 位、`cp.cloudflare.com/` 无路径段），并有一条回归用例把"公共 URL 原文保留"钉住。`redactUrl`（只红 token 的那版）**留着**，给非订阅 URL 用。（**此句已作废**：第 14 条的 ① 发现 `proxy_diagnose` 正是拿它去回显用户自传的 target，等于主机名与路径段明文出境，故 `redactUrl` 已整体删除，见第 15 条。）
+   **两个新助手解决两类漏口**：`maskHosts(text, url)` 存在的理由是 Node 的网络错误消息把**裸主机名**塞进字符串（`getaddrinfo ENOTFOUND xxx`），那不是 URL 形状，任何"整条 URL"正则都管不到，只能拿已知订阅地址逐词替换；`urlFingerprint` 见上。
+   **三层纵深**：源头（`subscriptions.js` 的 `toEntry`、`tools.js` 的 `subscriptionSummary` —— 后者只透传已脱敏值，注释写明不做二次脱敏）；边界（`callTool` 对每个返回值过 `redactText`）；持久落盘点（`index.js` 的 `makeLogger` 对**每一行**日志先 `redactText` 再写 `mcp.log`/stderr，`protocol.js` 对自身那条内部异常栈同样脱敏）。`subscription.js` 的超时/HTTP 非 200/URL 解析失败三条消息全部改走 `maskSubscriptionUrl` 或 `maskHosts`。
+   **TDD 与测试**：先写红再改实现，净增 **17 条用例**（18 条新写 + 1 条旧 `list` 契约用例改写；redact +8、subscription +3、subscriptions +3、tools +1、protocol +1、index +1）。tools.test.js 新增的"输出面审计"跑的是**真的** `SubscriptionRepo`，把 `proxy_status` / `proxy_subscriptions` / `proxy_subscription_add` / 一条错误路径都过一遍，断言 5 个泄露字面量（主机名、host:port、路径段、token 值、`token=` 形态）一个都不出现，同时断言 `profiles.yaml` 里**仍是原始完整链接** —— 脱敏只在输出面，CVR 必须能拿到真值才能发起请求。全量 `node --test --test-force-exit`：**182 tests / 182 pass / 0 fail**（改动前 165）。
+   **一处必须如实交代的测试期望修正**：我先写的第一版断言里给 `maskSubscriptionUrl('https:///SUBPATH?token=x')` 规定了"保留路径段掩码"，跑红之后才发现这条红不是实现的错，是我对 WHATWG 解析器的假设错了 —— 主机为空的 special scheme 会把路径吃掉，Node `new URL('https:///SUBPATH?token=x')` 的 `pathname` 并不是 `/SUBPATH`。于是把期望改成真正要守的不变量（原文任何子串都不得出现 + 保留 scheme），再写实现；改的是**测试对退化输入的期望**，不是对正常订阅链接的期望。
+   **真机验证（不打印任何明文）**：安装副本 `C:\Users\<user>\.qoder\plugins\cache\local\qoder-vpn-proxy\0.1.0` 与 worktree `diff -rq` 无差异；直接 spawn 安装副本的 server 走 stdio 调 `proxy_status` + `proxy_subscriptions`，返回 `url = "https://<masked-host>/<masked-path>?<masked-query>"`、`urlFingerprint = <fp:url-fingerprint>`、字段清单里 `urlPathOnly` 已消失。对照口径与第 11 条一致，needle 运行时从本机 CVR 配置现取、只比 `sha256[:10]` + 长度（`HOST <fp:sub-host>/18`、`PATH <fp:sub-path>/20`）：工具输出**与 `mcp.log`** 里真主机名 0 命中、真路径段 0 命中、`token=` 0 命中；指纹与从本机配置独立重算的结果一致（`<fp:url-fingerprint>`）。
+   **两个未闭环点**：① 这条改动只在**安装副本被重新加载之后**才对会话内工具生效 —— 当前正在服务的 Qoder 进程仍是改前的代码，本会话里 `proxy_subscriptions` 的返回还是旧形态，需用户重启一次才算进服务进程（与缺陷 5/6 同一个坑，已第三次踩到）。② 计划文档 `docs/superpowers/plans/2026-09-30-qoder-vpn-proxy.md:3269` 仍写着旧契约 `Entry = {… url(redacted), urlPathOnly …}`，那是**历史执行记录**、不是待办规格，故不回改；以本条为准。
+14. **同一轮插件健康重测暴露的 4 个候选缺陷（①②④ 已由第 15 条补完并推进 PR #1；③ 仍待用户点头）**：① `proxy_diagnose` 在"HTTP 200 但 curl 退出码 28"这一组合下的归类 —— 200 说明探测本身成功，exit 28 只是末尾计时截断，不该被降级成通道问题；② `proxy_restore_config` 之后 `configModified` 的语义不清（它指的是"相对还原前变了"还是"相对基线变了"，还原成功时返回 true 会让人误读）；③ `~/.qoder` 会话残留（transcript / 运行日志 / file-history）要不要清 —— 见第 11 条末，清了就没有本轮会话历史，属用户取舍；④ 每次 `tools/call` 的审计行目前只落 `mcp.log`，没有可查询的调用账本。①②④ 都可在 worktree 里按 TDD 补，③需要用户点头。
+15. **第 14 条的 ①②④ 已按同一 TDD 流程补完，并把脱敏 + 这三项推进 PR #1**（③ 未动，按第 11 条末的口径等用户点头）：
+
+   **① `proxy_diagnose` 不再把"通但慢"判成"坏了"（`56c91bc`）**：`probe` 改判为「状态码 2xx/3xx 即算够到目的地」，`curl` 退出 28 只表示 `--max-time` 在传输尾部触顶，于是这种组合记 `ok:true, truncated:true`；`000 + exit 28` 仍算失败。行结论追加"（直连与经代理在 max-time 触顶截断，响应体未收完）"，`summarize` 汇总 `truncatedCount` 并把建议指向"把 `timeoutMs` 调大（如 20000）再跑一次"而不是"换节点"。顺带把第 13 条遗留的漏口堵住：`runDiagnose` 回显**用户自传**的 target 之前走的是"只红 token"的 `redactUrl`，等于主机名与路径段明文出境 —— 现在统一走 `redactText`，并且 `redactUrl` 整个删除，用一条用例钉住"不再存在只红 token 的退路"（第 13 条里"`redactUrl` 留着给非订阅 URL 用"那句就此作废）。
+
+   **② `configModified` → `configDrift` 三态（`c6b6cf7`）**：`CvrConfig.modifiedSinceBackup` 返回 `{modified, clean, noBackup}`，文件当前不存在时另标 `missing:true`；`proxy_status` 用 `configDrift` 取代布尔字段，写清 `comparedTo`（跟"插件对每个配置文件最近一次落盘的时间戳备份"比）、`note`（**只说字节不同，分不清是插件、CVR 运行时回写还是用户手改**）、`noBackup` 是"没得比"不是"没问题"，读不到时 `available:false` + `error:<kind>` 而不是静默给空数组。`proxy_restore_config` 新增 `driftAfterRestore`（还原成功后立刻逐字节复查），脏则按 `warnings` 点名"极可能是 CVR 还在运行时把它写回去的"，并给出两条出路（接受 / 先 `proxy_core_stop` 再还原）；干净还原时 `warnings` 保持空数组——警告一多用户就不信警告了。
+
+   **④ 每次 `tools/call` 的可查询账本（`350d7a4`）**：新增 `server/audit.js`，`callTool` 的四条出口（成功、handler 抛错、参数校验失败、未知工具）各落一行 JSONL 到 `logs/calls.jsonl`，字段固定 `{ts, tool, args, ok, kind, ms}`。`args` 是**参数名**数组：`argNames` 只做 `Object.keys`，值没有任何写入通路——`logs/` 是永久磁盘残留，会话结束不清、卸载插件也未必清，订阅链接/节点名/组名进去就出不来。超过 64KB 裁到最近 200 条且最新一条必留；`logs` 被占成文件时 `record` 静默返回 `null`，记账失败绝不拖垮调用；`proxy_status` 用 `audit` 字段回读最近 10 条。**开关是环境变量 `QODER_VPN_PROXY_AUDIT=0` 而不是工具参数**：被审计的那次调用不该有权决定要不要被记；关闭时如实回 `enabled:false` + `note`，而不是当这功能不存在。
+
+   **测试**：182 → 188（①）→ 193（②）→ **207**（④ 净增 14：audit 6 + tools 5 + index 2 条端到端，另 1 条"未注入 `getAudit` 时行为不变"是回归护栏、写出来即绿，用途是钉住账本可选而非前置条件）。每一步都先跑红并核对红的理由（`Cannot find module '../server/audit'`、`ENOENT ... calls.jsonl`、`Cannot read properties of undefined (reading 'enabled')`）再写实现。**两处如实交代**：① ④ 的第一版用例我要求 `proxy_status` 读到的 `recent` 里含本次调用，实现做不到——账由 `callTool` 在 handler 返回后补写，成败与 kind 那时才知道，为自我包含去落两遍会破坏 append-only 且第一遍没有 `ok`，于是把期望改成"`note` 必须明写不含本次"；② 同一用例里我以为账本会有 3 行，实际 2 行（沙箱里只有两次调用），是我算错，按真实不变量改正。② 里还有一次"生产消息 vs 测试措辞"冲突（`CVR 正在运行` 的措辞），按第 9 条既定口径改的是**消息**、测试留作规格。
+
+   **推送与 PR**：直接把分支整体推上去会把第 11/12 条那两条只记录凭据清理过程的文档提交（`7d674d9`、`787f63c`）也带进 PR，而用户明确说过"不用把这两条补进 PR"。所以走**临时分支**：从 `origin/qoder-vpn-proxy`（`919a8c0`）切 `temp/pr-mask`，只 cherry-pick `590737a`/`56c91bc`/`c6b6cf7`/`350d7a4` 四个代码提交（这四个只碰 `qoder-vpn-proxy/**`，两条文档提交只碰 `docs/`，因此无冲突）。推送前三道验证：临时树上 `node --test --test-force-exit` **207/207**；`diff -rq qoder-vpn-proxy/` 与本地工作树**无差异**；59 个文件逐一对本机现取的真凭据 needle 做包含测试（`HOST <fp:sub-host>/18`、`PATH <fp:sub-path>/20`、`TOKEN <fp:sub-token>/32`、整条 `<fp:sub-url>/86`）**0 命中**。`git push origin temp/pr-mask:qoder-vpn-proxy` 快进 `919a8c0..34fe7f1`，`git ls-remote` 证实 `refs/heads/qoder-vpn-proxy` 与 `refs/pull/1/head` **同为 `34fe7f1`** —— 脱敏与三项修复已进 PR #1。临时 worktree 与 `temp/pr-mask` 已清理，本地 `7d674d9`/`787f63c` 与本条文档提交仍未推送。直连 `github.com` 仍 `Recv failure: Connection was reset`，走本机 7897 代理成功；认证沿用 `-c credential.helper= -c credential.helper=wincred`。
+
+   **仍未闭环（与第 13 条同一个坑）**：安装副本 `C:\Users\<user>\.qoder\plugins\cache\local\qoder-vpn-proxy\0.1.0` 已同步（`server/`、`test/`、`README.md`、`skills/vpn-proxy/SKILL.md` 全部 `diff -rq` 无差异，并在该目录内跑绿 207），但**当前在服务的 Qoder 进程还是改前代码**——`proxy_status` 的 `audit`、`configDrift`、`truncated` 都要用户重启 Qoder 后才对会话内工具生效。另：`~/.qoder/vpn-proxy/logs/calls.jsonl` 从重启后开始积累，之前的调用无从补记。
+
+16. **2026-10-01 重启后：①②④ 与脱敏在真进程里逐条验实，并补掉新发现的 ⑤（`3b011ae`）**
+
+   **生效证据（都来自本次会话的 MCP 工具返回，不是测试推断）**：`proxy_status` 的 `description` 本身就带新字段文案；`subscription.current.url = "https://<masked-host>/<masked-path>?<masked-query>"` 且 `urlFingerprint = <fp:url-fingerprint>` 在核心启停前后一致（指纹不含 token，所以这条性质正好被"换会话/换状态"验了一次）；① 在 `timeoutMs=2500` 与代理轮各命中一次 `200 + exit 28 → truncated:true`、`truncatedCount:1`，建议文案指向"调大 timeoutMs 再判"；② `configDrift` 在 `proxy_core_start` 之后报 `dirty:[verge.yaml, profiles.yaml]`，而 `profiles.yaml` **插件从未写过**，是 CVR 自己回写（`subscription.updated` 1790752062 → 1790849067）—— 这正是 `note` 里"分不清谁改的"要覆盖的真实场景；④ 账本从 0 行涨到 10 行，含失败那条 `proxy_select args:["group","target"] ok:false kind:channel_unavailable`。
+   **账本的凭据复验**（口径同第 11/13 条：needle 运行时从本机 CVR 配置现取，只印 `sha256[:10]`+长度）：`HOST <fp:sub-host>/18`、`PATH <fp:sub-path>/20`、`TOKEN <fp:sub-token>/32` 共 5 条形状 needle 对 `logs/calls.jsonl` **0 命中**；全文件连 `http` 子串都不存在；每行键集合恰为 `{ts,tool,args,ok,kind,ms}`，`args` 每项都匹配 `^[A-Za-z][A-Za-z0-9_]*$`（值无写入通路这条性质由形状证出来）。
+   **⑤ 404 被当成通道故障**（本次实跑撞出来的，第 14 条四条候选之外的新问题）：`server/clash-client.js` 把除 401/503/504 之外的一切非 2xx 归 `channel_unavailable`，**包括 404**，而紧挨着的一行给 404 写的 hint 是"组名 / 节点名 / uid 可能拼错"——kind 与 hint 自相矛盾。实测：`running:true` 且命名管道可达时 `proxy_select group=不存在的组` 仍回 `channel_unavailable`，而 skill 对这个 kind 的动作是"先 `proxy_core_start`"，于是打错名字会把调用方支去重启核心。修法是一行分档：404 → `malformed_config`，hint 补一句"若这个路径本身是核心没有的端点（v1.19.25 的 `POST /configs/reload`），404 说的是版本不支持"。`proxy_subscription_activate` 那边吞掉 reload 异常与 kind 无关，行为不变（`subscriptions.js:276-279`）。
+   **TDD**：`test/clash-client.test.js` 里原有一条**把旧分类钉成规格**的断言（`(e) => e.kind === 'channel_unavailable'`），本次连同新用例一起改成 `malformed_config`；先跑红并核对红的理由（`actual: 'channel_unavailable'` / `expected: 'malformed_config'`）再改实现。全量 **207 → 208/208**，且安装副本同步后在 `C:\Users\<user>\.qoder\plugins\cache\local\qoder-vpn-proxy\0.1.0` 目录内再跑一次同样 208/208（`server/`、`test/`、`skills/`、`hooks/`、`README.md`、`package.json` 与源码树逐字节相同）。
+   **收尾与状态**：`proxy_core_stop` 还原 `verge.yaml` 到本次 `core_start` 前的备份 `20261001-180420-189-002`，独立复查过：无 `clash-verge/verge-mihomo` 进程、7897 无监听、`\\.\pipe\verge-mihomo` 不存在、注册表 `ProxyEnable=0x0`（`ProxyServer`/`ProxyOverride` 按用户口径没动）、`verge.yaml` 回到 `enable_system_proxy: true`。本次核心是用 `proxy_core_start scope=session` 拉起的（浏览器全程不受影响）。**同一个坑第五次**：⑤ 的修法只对**重启后的**服务进程生效，本会话里 `proxy_select` 传错名字仍会回旧 kind。
+   **顺带纠正一条我的错误结论**：上一轮我判"本机已卸载 RollBack Rx"，错了。它装着（服务 `ShdServ` Running/Automatic、`C:\Program Files\Shield`、`shield.sys`+`shieldf.sys`、`HKLM\SOFTWARE\Shield` = v12.5），我上次按 "RollBack" 这个词找服务名与 Program Files (x86) 所以假阴性；读状态的正确命令是 `ShdCmd.exe /Status`（回 `Yes`）与 `/List`（只剩 `Id 3*` 99.0 GB 锁住，2026-06-26）。同时这次真实重启把 09-30 的写入**全部保住**（安装树、两个分支、工作树都在），所以"重启会吞改动"不是无条件成立的。
+
+17. **⑤ 的真机验证（不靠重启也不靠推断）＋ 新缺陷候选 ⑥：discovery 读的是**没人加载的**那份 config.yaml**
+
+   **前提先说清楚：Qoder 本次并没有真的重启。** `~/.qoder/vpn-proxy/logs/mcp.log` 里最后一条 `server 启动，17 个工具…` 是 `2026-10-01T09:48:04.815Z`（本地 17:48），早于 ⑤ 的代码改动，所以**正在服务的那个进程跑的仍是改前字节**——本会话里直接调 `proxy_select` 传错组名，回的还是 `channel_unavailable`。这与第 13/15/16 条是同一个坑，只是这次我不再等重启，改成**验安装副本的字节本身**。
+
+   **两条互补的实路（都拿到真 404，不是假想）**：
+   1. **MCP stdio 层**：`spawn` 安装副本 `server/index.js`，`QODER_VPN_PROXY_DATA` 指到 Temp、`QVP_CONFIG_DIR`/`QVP_INSTALL_DIR` 指到 Temp 里的**合成**配置（不含任何真订阅字节），另在本地命名管道上起一个假 mihomo，对 `PUT /proxies/<不存在的组>` 回 `HTTP 404`。走 `initialize` → `tools/call proxy_select` 的真实帧（换行分隔 JSON）拿到 `isError:true, kind:"malformed_config"`，`hint` 里点出 `proxy_nodes`；同一次调用在合成账本里落成 `{tool:"proxy_select",args:["group","target"],ok:false,kind:"malformed_config",ms:69}`。这条证明**打包后的服务端 + 协议层 + 账本**这一整串都对。
+   2. **真核心层**：不写盘、不复制配置，直接在内存里 `require` 安装副本的 `transport.js` + `clash-client.js`，用**本机 `clash-verge.yaml` 现读的**管道名与 secret 构 `createTransport({controller:{pipe,tcp:null},secret})` → `kind=pipe` 握手成功 → `select('不存在的组-verify5', …)` → 真 mihomo 回 `PUT /proxies/%E4%B8%8D… -> HTTP 404 {"message":"Resource not found"}` → 归 `malformed_config`，`hint` 含 `proxy_nodes`。这条证明**真核心真的这么答**，不是测试替身的脾气。两条都验完才叫 ⑤ 落地。
+
+   **⑥（未修，等用户点头）：`discovery.js` 的配置源顺序是错的。** `CONFIG_SOURCES = ['config.yaml', 'clash-verge.yaml', …]` 逐个 `try` 并在**第一个可读文件**上 `break`，于是永远命中 `config.yaml`。但 CVR 里 `config.yaml` 是**用户基座配置**（本机 mtime 2026-08-22，607 B，里面写着 `external-controller-pipe: \\.\pipe\verge-mihomo`），**mihomo 实际加载的是 `clash-verge.yaml`**（本次 mtime 18:22:09，26 257 B，声明 `\\.\pipe\verge-mihomo-sidecar-release-<64hex>`，共 102 字符、`sha256[:10]=<fp:pipe-name>`）。CVR 2.x 的 Sidecar 运行模式给管道名加了后缀，所以插件按老名字连——`Test-Path` 与 Node 连接都回 **ENOENT**，而按真名字连则 `GET /version -> 200 {"meta":true,"version":"v1.19.31"}`。这条同时解释了 18:22 那次 `proxy_core_start scope=session` 为什么报 `core_not_running`「25000ms 内未就绪」却**确实把进程拉起来了、7897 也在监听**：就绪判定走的是通道握手，通道名取错了。
+   **为什么算缺陷而不是环境问题**：第 8 条当初定的就是「`external-controller-pipe` 从文件里读，不硬编码」，⑥ 是这条契约**没读完**——读到了字段，但读的是没人加载的那份文件。修法很小也很明确：把 `clash-verge.yaml` 排在 `config.yaml` 之前（它是运行时产物，永远比基座新），或者干脆逐源都读、以**能握手成功的那个**为准并把 `configSource` 如实回显。但它会改 `proxy_status`/`proxy_core_start` 的判定路径，属于规格级取舍，所以**按第 14 条的口径先报不改**。
+   **顺带一条要更正的环境事实**：本文开头（第 7 行）写的「mihomo v1.19.25、控制通道 `\\.\pipe\verge-mihomo`」对 09-30 成立、对 10-01 不再成立——真机现在是 **v1.19.31 + sidecar 管道名**。⑤ 的 hint 文案里「v1.19.25 的 `POST /configs/reload`」是**举例**、不是版本上界，读作「这个端点在 v1.19.x 系列上就没有」即可；1.x 的版本漂移正是 ⑥ 值得修的长期理由（下次改名不用改代码）。
+
+   **收尾复查**：`proxy_core_stop restore=true` 回 `killed:[clash-verge.exe] restored:true`（用的备份是本次 start 前落的 `verge.yaml.20261001-182207-556-002`），独立复核不靠它的自述——`tasklist` 里 `clash-verge`/`verge-mihomo` 都没有；7897 无监听；两个管道名（sidecar 与 legacy）都 **ENOENT**；注册表 `ProxyEnable=0x0`，`ProxyServer`/`ProxyOverride` 按用户口径**没动**；`verge.yaml` 回到 `enable_system_proxy: true` / `enable_external_controller: false` / `enable_tun_mode: false`。本轮所有 Temp 脚手架（含合成配置与假管道服务端）已删除，`backups/` 现有 16 个文件、其中 7 个 `profiles.yaml.*.bak` 仍是**未脱敏原始字节**——是否 `prune` 等用户点头（第 11 条口径）。
+   **顺带一条测试卫生问题（候选 ⑦，未修）**：`npm test` 会在 `%TEMP%` 落 `qvp-hook-*` / `qvp-index-*` / `qvp-audit-wire-*` 等临时目录且**不自动回收**——第 12 条那次"Temp 已清空 262 项"之后，09-30 19:14 与 10-01 两轮跑测又攒出 **134 项**（249 个文件 / 133 KB）。本轮清理前按第 11 条口径重扫过：现取 needle（`HOST <fp:sub-host>/18`、`PATH <fp:sub-path>/20`、`TOKEN <fp:sub-token>/32`）**0 命中**；形状法另有 9 条命中，逐条与仓库 fixture 字面量比指纹后 8 条对上、剩下 1 条要单独定性（`qvp-red.txt` 里的 `9912700ada/43`）：它是 `http://`、主机 9 字符（真订阅主机 18 字符、fp `<fp:sub-host>`），路径段**长度同为 20 但 fp 是 `a51dec84b9` ≠ 真值 `<fp:sub-path>`** → 判为合成值，不是泄露；这条恰好说明为什么判据必须落在**值/指纹**上而不是"长度像不像"。**结论：每跑一次测试就要重新清一次 Temp**，修法应是用例自己的 `finally` 回收（或统一挂到 `QODER_VPN_PROXY_DATA` 下的单一目录），属测试改造、不动生产代码，所以同样先报不改。
+
+18. **⑥ 与 ⑦ 都已按 TDD 修掉（`056ded7` / `7b8a20f`），7 份带 token 的 profiles 备份按授权删除；跑验证时撞出新缺陷 ⑧（未修）**
+
+   **⑥ 的改法就一行顺序 + 一段为什么**：`server/discovery.js` 的 `CONFIG_SOURCES` 由 `['config.yaml', 'clash-verge.yaml', 'clash-verge-check.yaml']` 改成 `['clash-verge.yaml', 'config.yaml', 'clash-verge-check.yaml']`，并把"运行时产物优先、基座是坏运行时配置的兜底"写进注释。RED 核对过失败理由（断言实际拿到 `+ 'config.yaml'`、期望 `- 'clash-verge.yaml'`）再改实现。`test/discovery.test.js` 新增一条"clash-verge.yaml 与 config.yaml 同时存在时取前者"，除了管道名还必须断言 **`secret` 也来自运行时文件**——基座的旧密钥连 Sidecar 新管道只会 401，这是"读错文件"的第二种症状；同时把原有两条用例改名成「只有基座 config.yaml 时用它兜底」和「只有 clash-verge.yaml（首选源）时用它」，让"基座=兜底"这层语义落在标题里而不是注释里。**⑥ 之后 208/208。**
+   **⑥ 的真机证据（spawn 安装副本的 `server/index.js` 走 MCP stdio，`QODER_VPN_PROXY_DATA` 指到 Temp，不碰真数据目录）**：`discover()` 回 `configSource:"clash-verge.yaml"`，Sidecar 管道名与第 17 条现读到的那个一致；`proxy_core_start` 的**就绪耗时 63 ms**——修前那次同一条路径是 25 000 ms 超时、还谎报 `core_not_running`（进程其实起来了、7897 也在听）；`proxy_status` 连上真核心回 **v1.19.31**。顺带把 ⑤ 也在真核心上复验了一次：传不存在的组 → `kind:"malformed_config"`，响应体是 mihomo 自己的 `HTTP 404 {"message":"Resource not found"}`，与第 17 条假核心的脾气对得上。
+   **⑦ 的改法：测试侧集中登记 + 进程退出自扫，外加一处 `package.json` 的发现模式修正**：新增 `test/tmp.js`（`mkTmp(label)` 建 `qvp-<label>-XXXXXX` 并登记、`tmpDir(label)` 给依赖同名复位的老用例保持原语义、`sweepTmp()` 对 EBUSY/EPERM **计数不抛**、`process.on('exit', sweepTmp)`），把 `audit/store/index/session-start/subscriptions/toolconfig/tools` 里 17 处 `fs.mkdtempSync(path.join(os.tmpdir(), 'qvp-…'))` 全部换过去；`test/tmp.test.js` 4 条，其中"退出钩子真的扫"这条走子进程 fixture（`test/fixtures/tmp-leak-probe.js` 故意不自扫，父进程断言目录消失）。**反向对照做过**：临时注释掉 `process.on('exit', …)` 后，同一条 fixture 确实在 `%TEMP%` 留下了 `qvp-leak-vmxY4j` —— 证明这条断言不是空转，随后手工删掉该目录。
+   **`package.json` 的 test 命令为什么改成显式 glob**：`node --test` 的默认发现模式含 `**/test/**/*.js`，会把测试替身和工具当用例跑——`test/fake-mihomo.js`、`test/tmp.js`、`test/fixtures/tmp-leak-probe.js` 各算一条，于是计数虚高。**实测**：默认模式 `# tests 215`，显式 `node --test "test/*.test.js"` `# tests 212`，多的 3 条正是那三个非用例文件（`node --test test/` 也是错的，只跑 1 条）。所以命令定成 `` "test": "node --test \"test/*.test.js\"" ``（JSON 里那对反斜杠是 JSON 转义，跑起来就是 `node --test "test/*.test.js"`），而**数字口径从现在起是 212 声明 / 212 通过**。
+   **⑦ 的效果是量出来的，不是推的**：跑测前 `%TEMP%` 里 `qvp-*` 目录 **0** 个 → `npm test` 全量 **212/212** → 跑完再数仍是 **0**（改之前每跑一次留 5 个，第 17 条那两轮攒出过 134 项）。刚又用默认发现模式跑了一遍 215/215，Temp 依然 0，即自扫不依赖命令写法。安装副本同步后与源码树逐字节相同（`diff -rq` server/test/skills/hooks + `cmp README.md/package.json/.qoder-plugin/plugin.json`；写比对脚本时别把 `plugin.json` 摆在插件根去找——它其实在 `.qoder-plugin/` 子目录里，路径写错会报成一次假 "DIFF"，本次就这么错过一次）。
+
+   **⑧（新缺陷，未修，等点头）：一次被中断的 `core_start` 会把"压制系统代理"永久留在 `verge.yaml` 里。** 触发方式很日常：我把验证脚本的输出接了 `head -120`，`head` 读完就退出 → node 收到 **SIGPIPE** 被杀 → 脚本里排在后面的 `proxy_core_stop` 根本没执行。后果是 `verge.yaml` 停在 `enable_system_proxy: false`（4808 B），而 `proxy_status` 里**没有任何字段说"插件压制过且未还原"**，调用方看不到这个状态。
+   **为什么这算缺陷而不是我的操作失误**：`stop()` 的还原基准是"它自己那次调用的入口状态"，`start()` 压制成功后不留任何跨调用凭证；一旦进程被中断，压制就成了无主状态，下次 `stop()` 也不会去补。修法建议（**未实现**）：`start()` 压制时在数据目录落一个 session marker，记下压制前的键值，`proxy_status` 见到 marker 就把它列进 `warnings` 并给出还原命令；这与第 10 条"绝不写注册表"的边界不冲突——只改 `verge.yaml`，且仍走既有备份。
+   **本次的现场修复**：没有手改字节，而是用插件自己的 `CvrConfig.patchVerge` 把 `enable_system_proxy` 改回 `true`（它按契约先落了备份 `verge.yaml.20261001-192533-016-001`），复核现读 `verge.yaml`（4807 B）：`enable_system_proxy: true` / `enable_tun_mode: false` / `enable_external_controller: false`。
+   **顺带一条 Windows 事实（与 ⑧ 同族的加固项，本次实测坐实）**：`fs.copyFileSync` 走 Win32 `CopyFile`，**保留源文件的 mtime**——造一个 mtime 为 `2026-08-22T10:00:00Z` 的文件再 copy，副本 mtime 一模一样（只有 birthtime 是当下）。而 `listBackups()` 的排序键是 `(mtime desc) || (ts desc)`，**mtime 是主键、文件名里的 ts 只是并列时的次序**，所以"哪份备份最新"这句话在一个"复制旧基座 → 落新备份"的流程里会判错（例：先备份一份被 CVR 几个月前写过的 `verge.yaml`，它的 mtime 比昨天的备份还老，却排在前面）。加固方向：把 ts 提为主键、mtime 降为次要键；`backup()` 已经用 `stamp()+"-"+seq` 保证了 ts 在同一毫秒内也可排序，改起来不引入新信息。
+
+   **7 份带 token 的 profiles 备份已按授权删除**（口径同第 11/13/16 条：needle 运行时从本机 CVR 配置现取，只印 `sha256[:10]`+长度）。**删前**扫 `backups/` + `.trash/` + `logs/` 共 **22 个文件**，命中订阅 URL needle 的正好 **7 个**，且都是 `profiles.yaml.*.bak`（原始字节、未脱敏）；**删后**复扫 **15 个文件、URL needle 0 命中**。现在 `backups/` 剩 **10 个文件，全部是 `verge.yaml.*.bak`**（含本次修复落的 `192533-016-001`），`verge.yaml` 本身不含订阅 token。
+   **一条要用户单独点头的残留**：`~/.qoder/vpn-proxy/.trash/` 里两份 `20260930125704203-003-TESTUID6fc25.yaml` / `20260930130959728-003-TESTUIDd7225.yaml`（各 **28 648 B**）命中 **14 条节点秘密 needle**（现取运行时配置里的 password/uuid/server/sni 值）。这是 09-30 那次订阅操作软删的旧正文，属于"节点凭据"而不是"订阅 token"，所以没被上面那条删除覆盖——**本次授权只到 profiles 备份，这两份我没动**，等一句话确认。
+
+   **收尾复查**：核心已 `proxy_core_stop`，`tasklist` 无 `clash-verge`/`verge-mihomo`，7897 无监听，两个管道名都 ENOENT；注册表 `ProxyEnable=0x0`、`ProxyServer`/`ProxyOverride` 按用户口径没动；本轮所有 Temp 脚手架与一次性脚本（`verify6.cjs` / `store-scan.cjs` / `temp-scan.cjs` / `repair-verge.cjs` / `migrate-tmp.cjs`）已删除，验证跑测的带 token 备份因走 `QODER_VPN_PROXY_DATA` 只落在 Temp 里、随目录一起清掉。**同一个坑第六次**：`056ded7`/`7b8a20f` 的字节要等 Qoder 真重启才在服务进程里生效——本会话里正在服务的那个进程仍是改前字节，第 17 条那套"验安装副本本身"的绕法是有效的替代。
+   **git 状态**：本地 tip `7b8a20f`（⑥ `056ded7` + ⑦ `7b8a20f`），远端仍是 `34fe7f1`；`3b011ae`（⑤）与这两条都**未推送**，推送与 PR #1 的增量都等用户点头。（→ 10-02 已按授权推送，见第 19 条。）
+
+19. **2026-10-02：⑤⑥⑦ 按授权推进 PR #1（远端 `34fe7f1` → `e32b983`），推送前三道门与一条假警报定性**
+
+   **做法与第 15 条同**：从 `origin/qoder-vpn-proxy`（`34fe7f1`）切**临时 worktree + 临时分支**，只 cherry-pick 三个代码提交 → `f55306f`(⑤)、`e3f420f`(⑥)、`e32b983`(⑦)；本地那 11 条 docs 提交（第 15–18 条与其修正）一条都没带出去。**踩到的一条**：`git cherry-pick` 不带身份会在**已经 apply 之后**才失败（`unable to auto-detect email address`），此时索引里留着改动、后续 pick 全被 `local changes would be overwritten` 挡下——`git -c user.name=… -c user.email=… cherry-pick` 才对（仍不动 `git config`），我这次是先 `cherry-pick --abort` 再重跑。
+   **三道门**：(1) **子树一致性**：`git diff --stat qoder-vpn-proxy e32b983 -- qoder-vpn-proxy/` 输出为空 → 要推的插件目录与本地 tip 逐字节相同，差异只在 `docs/`（工作树根、插件目录之外）。(2) **在被推的那棵树里跑测试**：`npm test` → **212/212**，`%TEMP%` 里 `qvp-*` 仍为 0（⑦ 自扫在临时 worktree 里同样成立）。(3) **凭据扫描**：对改动文件在 base+tip 两端的 **29 个 blob**，用运行时从本机 `profiles.yaml`/`clash-verge.yaml` 现取的 **16 条 needle**（订阅面 4 / 节点面 12）比对，只印 `sha256[:10]`+长度 → **0 条真凭据命中**。
+   **两类"看着像"必须逐条定性，否则下次还会误判**：(a) 形状法在 `audit/subscriptions/tools` 三个测试里各命中 1–2 条带 `token=<32hex>` 的 URL，但主机 `ba44c0cdf2/19`、`1fcb5f1086/22`、`f417b8c2f8/21` 都与真值 `<fp:sub-host>/18` 不同，路径段 `bd0f1d29c1/22`、`a51dec84b9/20`、`4266a021bd/22` 都与真值 `<fp:sub-path>/20` 不同 → 全是合成 fixture。(b) 唯一一条 needle 真命中是 `f1412386aa/7`，落在 `tools.test.js` 两行假 curl 输出的 `%{remote_ip}` 位；我用候选词反查指纹确认它就是 **`1.1.1.1`**（Cloudflare 公共 DNS，本机订阅里某个 `server:` 值恰好是它）。**教训**：公共值（公共 DNS、`127.0.0.1`、`example.com`）进 needle 表会造成长期假警报——needle 抽取要带一张公共值排除表，这条比"按形状取 needle"更值得固化。
+   **网络与生效方式（两处要更正前面的口径）**：推送这一刻 github.com 直连**又**挂了（`--noproxy '*'` 连续 5 次全 `000`，而同一会话开头 `git fetch` 还成功——第 6 次印证"别缓存这个判断"），于是按用户既定口径走会话级代理：`proxy_core_start scope=session` → `git -c http.proxy=http://127.0.0.1:7897 push` → `34fe7f1..e32b983`（**fast-forward，无 force**）。同时这次 `core_start` 回 `channel.kind:"pipe"`、`waitedMs:9011` 直接就绪，说明**新会话重新 spawn 的服务进程已经带 ⑥**——第 16/17/18 条反复说的"要等真重启"过强了，准确说法是**新建会话即生效**（与安装副本字节同步是两件事），本条把那条口径纠正过来。
+   **远端核对**：`git ls-remote` 回 `refs/heads/qoder-vpn-proxy = refs/pull/1/head = e32b983ba44e997bd6243d61dbc95bf1a9259674` → **PR #1 现在含订阅 URL 脱敏 + ①②④ + ⑤⑥⑦**。
+   **收尾复查**：`proxy_core_stop restore=true` 用本次 start 落的 `verge.yaml.20261002-080940-559-002`；独立复核：`tasklist` 0 个 `clash-verge`/`verge-mihomo`、7897/9097 0 监听、注册表 `ProxyEnable=0x0`（`ProxyServer`/`ProxyOverride` 未动）、`verge.yaml` 三键 `enable_system_proxy: true` / `enable_tun_mode: false` / `enable_external_controller: false`、4807 B。临时 worktree 注销后 `git worktree remove` 删空目录时报过一次 `Permission denied`（内容已删净，`git worktree list` 里已消失），随后 `rmdir` 成功；`tmp/pr1-push` 分支已删；Temp 的 4 个一次性脚本（扫描器 + 掩码上下文探针 + 两份输出）已删，`qvp-*` 归 0。
+   **新残留一条，等点头**：本次 `core_start` 又按契约落了 `backups/profiles.yaml.20261002-080940-557-001.bak`（**未脱敏、含订阅 token**），`backups/` 现 **13 个文件**。上一轮的删除授权只覆盖当时那 7 份，这份我没有动；要么单独授权删，要么以后每次 `core_start` 都提醒一次。（→ 10-02 按"先脱敏，然后修复缺陷"就地掩掉了，见第 20 条。）
+
+20. **2026-10-02：三处凭据残留改为就地脱敏（不删文件），缺陷 ⑧ 按 TDD 修完并真机复验 17/17；同族加固把备份排序的主键从 mtime 换成时间戳**
+
+   **用户口径变了**：第 18/19 条留的"要么删、要么每次提醒"没有选删除，而是**"三件事先脱敏，然后修复缺陷"** —— 保留文件（restore 的依据还在），只把里面的凭据掩掉。这三处是 `backups/profiles.yaml.20261002-080940-557-001.bak` 与 `.trash/` 两份订阅正文。
+
+   **脱敏不是"跑个正则"，第一轮差点漏干净**（这一条最值得固化）：
+   - **行锚定的 `key: value` 解析看不见 flow-mapping**。`.trash` 那两份是 mihomo 运行时配置（556 行），节点写成一行一个 `    - { name: …, type: ss, server: …, port: 53, password: …, cipher: …, udp: … }`，`^\s*(password):\s*(.+)$` 这类锚定式**整段扫不到**，所以第一版探针报"needle 命中 0 条"、而上一轮按形状扫的是 14 条 —— 两个数字都不算错，只是量的面不同。改成"整行子串比对内存里的原值"才抓到真值，掩码也改成按 `key:` 在 `空格 / , / { / "` 之后出现来定位。
+   - **"算法名"启发式会静默排掉 UUID**。我原先用"含 `-` 且只由 `[a-z0-9-]` 组成"来排除 `aes-256-gcm` 这类 cipher 值，结果 `uuid`/`short-id` 这些同样是 UUID 的秘密被一起排除了，needle 表停在 23 条。换成显式密码套件前缀黑名单（`CIPHER_RE = /^(aes|chacha20|xchacha20|salsa20|rc4|des-|camellia|bf-|seed|aria|twofold|none|plain|http)/i`）后 needle 从 **23 → 40 条**，并把 `public-key` / `short-id` / `secret` / `obfs-password` 补进 SECRET_KEYS、把 `set-your-secret`、`verge-mihomo` 这类占位/进程名补进公共值表（第 19 条 `1.1.1.1` 假警报的同族）。
+   - **`proxy-groups` 里内联的 `url:` 是旧订阅链接**，行锚定法同样到不了 → 再加一层"全文 needle 替换，长串优先"。URL 形状的 needle 统一替换成插件自己的显示形态 `https://<redacted-host>/<redacted-path>?<redacted-query>`，跟 `proxy_status` 的输出面口径一致。
+   - **一处越界在复核时被自己否掉**：最初连节点的 `name:` 一起掩了，但这既和 `proxy-groups` 里的 `proxies:` 数组失配（改出来的文件语义坏掉），也违背插件自己的契约——`proxy_nodes` 本来就返回节点名。最终**节点名保留**，只掩 server/port/password/uuid/sni/cipher 之外的秘密键。
+
+   **改前先验、改后才动真文件**：整个掩码先在 `QODER_VPN_PROXY_DATA` 指到 Temp 的**副本**上跑，两道独立证据都过才落到真文件：(1) 用 40 条 needle 重扫 → 0 命中；(2) 结构法"不存在未被掩的凭据键" → 0 命中。再加形状自检：行数、花括号数、冒号数逐项对齐（中途正是靠"冒号 87→86"抓到一个正则分组下标取错的 bug：`maskUrlLine` 把 `m[2]`（嵌套的空白组）当值，URL 被替换成裸 `<redacted>` 并把 `url:` 的冒号吃掉了）。实测结果：
+   - `backups/profiles.yaml.20261002-080940-557-001.bak`：**1750 → 1720 B，恰好只改 1 行**（L44 的 `url:`），89 行 → 89 行，冒号 87 → 87。
+   - `.trash/` 两份订阅正文：各 **28648 → 27615 B**，每份掩掉 **66 个结构性凭据值 + 2 处订阅 URL needle**，556 行、31/31 花括号不变。
+   - 全盘复扫（`backups/` + `.trash/` + `logs/` 共 **19 个文件**，40 条 needle）→ **命中文件 0 个、命中 0 条**。输出面照旧只印 `sha256[:10]` + 长度，全程没把任何一个原值打到屏幕上。
+   **两条要说给用户后果**：(a) 那份 profiles 备份不再是可用的还原源——用它 restore 会把 `url:` 写成一条死链接；(b) 真 `profiles.yaml` 与这份"掩码后的基线"字节必然不同，所以 `proxy_status.configDrift` 从现在起会把 `profiles.yaml` 报成 `dirty`。这是脱敏的代价，不是新问题。
+
+   **⑧ 的修法就是第 18 条写下的方案，一字未改地实现**：`CvrConfig` 新增可选 `markerPath`（不注入时整套机制休眠，现有调用与测试零改动）；`start(scope=session)` **在压制之前**把 `enable_system_proxy` / `enable_proxy_guard` 的原值记进数据目录的 `suppression.json`（`{version, created, updated, entries:[{key,before,after}]}`），**合并时同键保留最早的 `before`**（否则第二轮 start 会把用户的 `true` 洗成上一轮压制出来的 `false`）；`stop()` 先 restore 再按凭证补写（`patchVerge` → 照例先备份），全部对齐才作废凭证，`restore:false` 则保留并说话；`start` 失败的回滚除 `restoreFrom(入口备份)` 之外**也要按凭证补写一次**——入口备份本身就可能是压制态。`proxy_status` 多出 `suppression` 一块：`present` + `state`（核心在跑 = `active`，没跑 = `orphaned`）+ `entries`，且 `present:true` 时**必然进 `warnings`**（只在子字段里说等于没说）。边界与第 10 条不冲突：只改 `verge.yaml`、仍走既有备份、注册表照旧只读。
+
+   **TDD 里抓到一个自己写的空转用例**：`start 失败回滚时也要把 marker 撤掉` 第一轮**直接通过**了——因为实现根本没写过 marker，"文件不存在"这句断言自然成立。改成两轮：先让一轮**成功**的 start 把凭证落到盘上（断言前置条件成立），再用 `waitForChannel` 抛错的第二轮 start 去失败回滚，并加断言"回滚后 `enable_system_proxy` 必须已是原值"（这条同时把"回滚要按凭证补写"这个新契约钉住）。其余 8 条 marker 用例 + 1 条 `listBackups` 用例 + 2 条 `proxy_status` 用例都先核对过失败理由（缺字段 / `ENOENT` / `reading 'present'`）再改实现。
+   **同族加固（第 18 条末实测坐实的那条）**：`listBackups` 与 `store.listBackupsIn` 改成**时间戳为主键、mtime 只兜底**（两种 stamp 去掉分隔符后同为 20 位数字，可直接比大小；`padEnd(24,'0')` 只给极端长度留确定次序）。危害不止"restore 挑到过期那份"——`pruneBackupsIn` 的"每组至少留最新一份"依赖同一顺序，mtime 主键会把 `copyFileSync` 复制来的、mtime 很老的**真正最新备份**当旧的删掉，所以新增的 store 用例把这条直接断言进 prune 结果里。原有用例只改标题（`按 mtime 排` → `按时间戳排（mtime 只兜底）`），其断言在新主键下同样成立（那份带横杠的文件既是更晚 ts 也是更晚 mtime）。
+
+   **测试**：`npm test`（显式 glob `node --test "test/*.test.js"`）→ **223/223**，口径从 212 起 **+11**（cvr-config 8、store 1、tools 2）。跑完 `%TEMP%` 里 `qvp*` = **0**（⑦ 自扫仍成立）。
+
+   **真机复验（spawn 安装副本的 `server/index.js` 走 MCP stdio，`QODER_VPN_PROXY_DATA` 指到 Temp，不碰真数据目录）：17/17**。现场照 ⑧ 的踩法复现：会话 A `core_start scope=session`（`waitedMs=2552`、`channel=pipe`）→ 返回值自证 `suppressionMarker.entries = [[enable_system_proxy,true],[enable_proxy_guard,false]]`（**本机 `enable_proxy_guard` 用户本来就设 false，凭证如实记 false**，所以"合并保住原值"那条断言按起始快照比而不是硬编码 true）→ 直接把调用方 **SIGKILL**（没有 stop）→ `tasklist` 证实核心仍在跑、`verge.yaml` 停在压制态 → 会话 B `proxy_status` 报得出凭证并进 `warnings`（"…enable_system_proxy（原值 true）…尚未确认还原…收尾请用 proxy_core_stop"）→ 会话 B 再 `core_start`（入口备份本身就是压制态）后 `stop restore=false` 保住凭证、`stop restore=true` 回 `suppression.repaired=[{enable_system_proxy, false→true}] cleared=true`。收尾独立复核：`verge.yaml` **四个键与起始值相同且逐字节相同（sha256[:10] `<fp:verge-yaml>` → `<fp:verge-yaml>`，4807 B）**、`suppression.json` 已消失、`tasklist` 0 个 CVR 进程、7897 无监听、`ProxyEnable=0x0`（`ProxyServer`/`ProxyOverride` 未动）、Temp 数据目录（含 7 份备份、其中 2 份带 token 的 profiles）**随目录删除**，真 `backups/` 仍是 **13 个文件、没有新增**、真数据目录下没有 `suppression.json`（说明此刻确实无欠）。
+
+   **一条真机未通过项的定性（不是 ⑧ 的逻辑错）**：第一次跑时 `stop(restore=false)` 之后立刻 `proxy_status` 仍回 `running:true` → `state:active` 而不是 `orphaned`。单独探针定位：同一时刻 `tasklist /FO CSV` 实测**没有任何 CVR 进程**，而 2.4 秒后同一条 `proxy_status` 就回 `running:false / state:orphaned` —— 是 `server/index.js` 的 **`RUNTIME_TTL_MS = 2000` runtime 缓存**在 stop 之后还留着旧值（`stop` 本身不刷新缓存），属第 15 条就存在的缓存语义，与 marker 判定无关。影响面很窄：`warnings` 在 `present:true` 时无论如何都会出（只是措辞是"本会话压制中"），而真实孤儿场景是**新会话**冷启动读到的，缓存是空的，判得准。所以本轮只把主验证的等待从 800ms 调到 2600ms 让断言口径与实测一致，**没有**为此扩 `getRuntime` 的签名（改成"present 时强制刷新"或"拿 `core.reachable` 反推"都会把"CVR 在跑但控制器不可达"误标成 orphaned，风险大于收益）。留给以后的候选修法：给 `getRuntime` 加一个 `force` 参数并只在 `proxy_core_stop` 之后用一次。
+
+   **安装副本**：`server/{cvr-config,store,tools,index}.js`、`test/{cvr-config,store,tools}.test.js`、`README.md`、`skills/vpn-proxy/SKILL.md` 同步后与源码树逐字节相同（`diff -rq --exclude=node_modules` server/test/skills/hooks + `cmp README.md/package.json/.qoder-plugin/plugin.json`，全 SAME）。README 补了 `suppression.json` 一行与两个工具的输出说明；SKILL.md 在"什么时候用哪个工具"加一行"上一个会话是不是压制了系统代理没还原"、在边界里点明 **`scope=session` 确实会改 `verge.yaml`**（先前那句"不改系统代理"容易被读成"这个键不碰"）、并新增"`suppression.available:false` 是读不到、`error:"unreadable"` 时插件既不猜原值也不顺手删"。
+
+   **git 状态**：本地 tip `2788372`（⑧ 的代码提交，含同族加固与文档；测试 223/223），其下是第 19 条推出去的 `98c5824` 等 docs 提交。**远端仍是 `e32b983`** —— 这条代码提交**未推送**，推不推、要不要再走一次"临时 worktree + cherry-pick"的三道门等用户点头。Temp 的一次性脚本（`qvp-mask.cjs` / `qvp-audit-tree.cjs` / `qvp-diff.cjs` / `qvp-shape.cjs` / `qvp-residual-host.cjs` / `qvp8-verify.cjs` / `qvp8b-probe.cjs`）全部删除，`%TEMP%` 里 `qvp*` = 0。
+
+21. **2026-10-02：docs 口径从"永不推"改为"脱敏后一起推 PR #1"——先把第 11–20 条里的身份指纹与本机用户名换成语义占位，再推。推之前必须验的一件事是"远端那份文档现在到底到第几条"**
+
+   **为什么这次一定要脱敏，是先查证而不是先假设**：`git ls-tree -r e32b983 | grep '^docs/'` 回 6 个文件，`git show e32b983:docs/.../acceptance.md` 是 **522 行 / 53 229 B、编号只到第 10 条**，而且对 5 个身份指纹逐个 `grep -c` 全是 **0**（订阅 host/path/token 与 `urlFingerprint`、Sidecar 管道名那批 `sha256[:10]` 一条都不在远端）。也就是说公开仓库里的 docs 停在"还没有活凭据审计叙事"的第 10 条；把第 11 条往后推上去**才是**首次公开，而第 11–20 条恰好是审计叙述，里面钉着真值指纹。反过来说：如果当初查证成"docs 早就公开了"，这次的处置就得变成第三轮历史重写，完全是另一件事。**结论先记下来**：判"要不要脱敏"之前先查远端那一版到哪，别拿本地 tip 的内容推断公开面。
+
+   **脱敏映射（`Temp/qvp-mask-docs.js`，只打印替换计数，原值一个不上屏）**：7 个身份承载的 `sha256[:10]` → 语义占位 —— 订阅 host `<fp:sub-host>`、路径段 `<fp:sub-path>`、token `<fp:sub-token>`、整条 URL `<fp:sub-url>`、`urlFingerprint` `<fp:url-fingerprint>`、Sidecar 管道名 `<fp:pipe-name>`、本机 `verge.yaml` 内容哈希 `<fp:verge-yaml>`；外加本机登录名（Windows 账户名，13 字符，不在任何 needle 表里）→ `<user>`（同时覆盖 `C:\Users\…`、`C:\\Users\\…`、`/c/Users/…`、`ls` 属主列与 JSON 里的 `author.name`）。计数：acceptance **39 处**（指纹 25 + 用户名 14，105 049 → 105 055 B）、plans 3 处、probes/03 1 处，specs 与 probes/01、02 零替换。**指纹的"长度"保留**（`<fp:sub-host>/18` 这种写法照旧），泄露的是值不是位数，而位数本来就是审计口径的一部分。
+
+   **有意保留的 10 位十六进制**（复核时逐个定过性，别下次又当残留）：公共值与合成 fixture 的指纹 —— `www.gstatic.com`/`generate_204`/`1.1.1.1` 各一条，加 6 条测试替身里的假 host/假路径段指纹（第 19 条"两类看着像"的叙事要靠它们才能对上"与真值不同"）；以及十进制整数（时间戳 `179xxxxxxx`、`1073741824`）与 Qoder beta 版本号里的 `26f2496093`。**判据是"这个串是不是本机独有身份的哈希"，不是"它像不像十六进制"**。
+
+   **复扫（口径要说清，别混用）**：`Temp/qvp-docs-scan.js` 运行时从 `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev` 现取 needle —— `profiles.yaml` 的 `url:` 出订阅面 3 条（host/path/query），`profiles/` 13 个内容文件出节点面秘密（`password` 1、`server` 12），带公共值排除表与 cipher 前缀黑名单，共 **16 条**。结果：docs 6 个文件 + 两个脱敏前旧 blob（`98c5824` 94 113 B、`daf583b` 105 049 B）**命中 0**，作对照器的插件子树 54 文件也 0。这条表比第 20 条那次的 **40 条窄**，因为 `.trash/` 两份已经掩掉、不再当 needle 源 —— 所以它证明的是"docs 不含本机现值"，不重复证明第 20 条的残留结论。
+
+   **推 docs 的正确做法不是 cherry-pick 那两条 docs 提交**（这一条最容易做错，值得固化）：`98c5824`/`daf583b` 的 **tree 里存的是脱敏前的整份文件**，cherry-pick 等于把未掩码 blob 送进公开历史，掩码白做。改成：临时 worktree 从 `e32b983` 切分支 → cherry-pick 代码提交 `2788372` → **从已脱敏的工作树快照单独建一条 docs 提交**（`git checkout <本地 tip> -- docs/` 之后整棵 `docs/` 作为一个新 blob）。这样公开历史上每一版 `docs/` 都是掩码后的。附带好处：本地历史保留未掩码原文（事实记录不缩水），公开面只有占位。
+
+   **推送与三道门 / 远端核对 / 收尾**：见本条末的补记。
