@@ -23,8 +23,7 @@
 - 写 `%APPDATA%\io.github.clash-verge-rev.clash-verge-rev\` 下任何文件（`verge.yaml`、`profiles.yaml`）之前，必须先做带时间戳的完整备份；备份失败则中止，不进入半改状态。
 - MCP stdio 服务端的 `process.stdout` 只写 JSON-RPC 帧。日志一律写 `stderr` 或插件数据目录文件，否则会破坏协议。
 - 面向用户的文案（工具 `description`、`hint`、`SKILL.md`、README）用中文。
-- 每个任务结束时 `npm test` 必须全绿，然后提交一次 git commit。
-- **全量测试一律写成 `npm test`（本项目定成 `node --test "test/*.test.js"`）或 `node --test test/具体文件.test.js`，绝不要写 `node --test test/`。** 本机 shell 的 Node 是 v22.23.3，给它一个目录位置参数会被当成"要执行的模块"，直接 `MODULE_NOT_FOUND: ...\test` 而不是递归扫描 —— 这个坑会让整个 `npm run test` 与每个任务的"全量测试"步骤假失败。同样**不要写无参数的 `node --test`**：默认发现模式会把 `test/` 下的替身与脚本（`fake-mihomo.js`、`tmp.js`、`fixtures/tmp-leak-probe.js`）当用例收集，声明数就不对（实测无参数 215 vs 显式 glob 223）。单文件形式（`test/x.test.js`）不受影响。
+- 每个任务结束时 `node --test` 必须全绿，然后提交一次 git commit。
 
 ## 文件结构
 
